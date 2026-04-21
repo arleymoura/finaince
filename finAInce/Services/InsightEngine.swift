@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import SwiftUI
 
 // MARK: - InsightEngine
@@ -135,13 +136,15 @@ struct InsightEngine {
             let percent = abs(delta / previous.amount) * 100
             guard percent >= 3 else { continue }
 
-            let name = tx.placeName ?? tx.category?.name ?? "Despesa recorrente"
+            let name = tx.placeName ?? tx.category?.name ?? t("insight.fallback.recurringExpense")
             let isIncrease = delta > 0
 
             return makeInsight(
                 kind: .priceChange,
-                title: isIncrease ? "\(name) ficou mais caro" : "\(name) ficou mais barato",
-                body: "Mudou \(Int(percent.rounded()))% em relacao ao lancamento anterior.",
+                title: isIncrease
+                    ? t("insight.priceChange.increase.title", name)
+                    : t("insight.priceChange.decrease.title", name),
+                body: t("insight.priceChange.body", Int(percent.rounded())),
                 icon: isIncrease ? "arrow.up.circle.fill" : "arrow.down.circle.fill",
                 color: isIncrease ? .red : .green,
                 sentiment: isIncrease ? .alert : .opportunity,
@@ -155,10 +158,12 @@ struct InsightEngine {
                 urgency: 35,
                 basePriority: 80,
                 currencyCode: context.currencyCode,
-                chatPrompt: """
-                A despesa recorrente "\(name)" mudou \(Int(percent.rounded()))% e agora esta em \(tx.amount.asCurrency(context.currencyCode)).
-                Avalie se isso parece normal, o impacto no meu orcamento e quais acoes praticas eu deveria tomar.
-                """
+                chatPrompt: t(
+                    "insight.priceChange.prompt",
+                    name,
+                    Int(percent.rounded()),
+                    tx.amount.asCurrency(context.currencyCode)
+                )
             )
         }
 
@@ -176,8 +181,8 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .monthComparison,
-            title: isIncrease ? "Mes acima do anterior" : "Mes abaixo do anterior",
-            body: "Seu total mudou \(Int(percent.rounded()))% frente ao mes passado.",
+            title: isIncrease ? t("insight.monthComparison.up.title") : t("insight.monthComparison.down.title"),
+            body: t("insight.monthComparison.body", Int(percent.rounded())),
             icon: isIncrease ? "arrow.up.circle.fill" : "arrow.down.circle.fill",
             color: isIncrease ? .red : .green,
             sentiment: isIncrease ? .alert : .opportunity,
@@ -191,10 +196,12 @@ struct InsightEngine {
             urgency: 40,
             basePriority: 90,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            Meus gastos pagos neste mes foram \(context.currentMonthPaid.asCurrency(context.currencyCode)) e no mes anterior \(context.previousMonthPaid.asCurrency(context.currencyCode)).
-            Analise os motivos dessa variacao de \(Int(percent.rounded()))% e sugira ajustes praticos.
-            """
+            chatPrompt: t(
+                "insight.monthComparison.prompt",
+                context.currentMonthPaid.asCurrency(context.currencyCode),
+                context.previousMonthPaid.asCurrency(context.currencyCode),
+                Int(percent.rounded())
+            )
         )
     }
 
@@ -210,8 +217,12 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .spendingPace,
-            title: "Ritmo de gastos acelerado",
-            body: "Voce ja consumiu \(Int((paidRatio * 100).rounded()))% do previsto com o mes em \(Int((context.elapsedMonthRatio * 100).rounded()))%.",
+            title: t("insight.spendingPace.title"),
+            body: t(
+                "insight.spendingPace.body",
+                Int((paidRatio * 100).rounded()),
+                Int((context.elapsedMonthRatio * 100).rounded())
+            ),
             icon: "speedometer",
             color: .orange,
             sentiment: .alert,
@@ -225,10 +236,7 @@ struct InsightEngine {
             urgency: 80,
             basePriority: 150,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            Meu ritmo de gastos esta acelerado: o total pago atual sugere um fechamento de \(projected.asCurrency(context.currencyCode)) neste mes.
-            O que devo cortar ou monitorar agora para evitar estourar o planejamento?
-            """
+            chatPrompt: t("insight.spendingPace.prompt", projected.asCurrency(context.currencyCode))
         )
     }
 
@@ -237,7 +245,9 @@ struct InsightEngine {
             $0.recurrenceType == .monthly && $0.isPaid
         }
 
-        let grouped = Dictionary(grouping: paidMonthly, by: merchantKey(_:))
+        let grouped = Dictionary(grouping: paidMonthly) { transaction in
+            merchantKey(transaction)
+        }
         var flagged: [(name: String, amount: Double)] = []
 
         for (key, values) in grouped {
@@ -270,8 +280,8 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .subscriptionUnused,
-            title: "\(count) assinatura\(count > 1 ? "s" : "") para revisar",
-            body: "Ha \(total.asCurrency(context.currencyCode)) por mes em cobrancas recorrentes estaveis com baixo sinal de uso.",
+            title: t(count > 1 ? "insight.subscriptionUnused.titlePlural" : "insight.subscriptionUnused.titleSingular", count),
+            body: t("insight.subscriptionUnused.body", total.asCurrency(context.currencyCode)),
             icon: "rectangle.stack.badge.minus",
             color: .orange,
             sentiment: .alert,
@@ -285,10 +295,11 @@ struct InsightEngine {
             urgency: 55,
             basePriority: 130,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            Identifiquei \(count) assinaturas recorrentes com baixo sinal de uso, somando \(total.asCurrency(context.currencyCode)) por mes.
-            Me ajude a decidir quais revisar, cancelar ou renegociar primeiro.
-            """
+            chatPrompt: t(
+                "insight.subscriptionUnused.prompt",
+                count,
+                total.asCurrency(context.currencyCode)
+            )
         )
     }
 
@@ -307,8 +318,8 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .endOfMonthProjection,
-            title: isHigher ? "Fechamento do mes em alta" : "Fechamento do mes mais leve",
-            body: "No ritmo atual, o mes pode fechar em \(projected.asCurrency(context.currencyCode)).",
+            title: isHigher ? t("insight.endOfMonthProjection.high.title") : t("insight.endOfMonthProjection.low.title"),
+            body: t("insight.endOfMonthProjection.body", projected.asCurrency(context.currencyCode)),
             icon: "chart.line.uptrend.xyaxis",
             color: isHigher ? .red : .green,
             sentiment: isHigher ? .alert : .opportunity,
@@ -322,10 +333,11 @@ struct InsightEngine {
             urgency: 85,
             basePriority: 160,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            Projetei um fechamento de \(projected.asCurrency(context.currencyCode)) para este mes, contra \(context.previousMonthPaid.asCurrency(context.currencyCode)) no mes anterior.
-            Analise o risco dessa trajetoria e onde posso agir primeiro.
-            """
+            chatPrompt: t(
+                "insight.endOfMonthProjection.prompt",
+                projected.asCurrency(context.currencyCode),
+                context.previousMonthPaid.asCurrency(context.currencyCode)
+            )
         )
     }
 
@@ -349,25 +361,32 @@ struct InsightEngine {
                 let percent = ((tx.amount - average) / average) * 100
                 guard tx.amount > average * 1.8, percent > 40 else { continue }
 
-                let body = "O valor de \(tx.amount.asCurrency(context.currencyCode)) esta \(Int(percent.rounded()))% acima da media desse estabelecimento."
-                let prompt = """
-                A compra em "\(merchant)" saiu por \(tx.amount.asCurrency(context.currencyCode)), cerca de \(Int(percent.rounded()))% acima da media historica.
-                Quais hipoteses fazem sentido e como devo investigar isso?
-                """
+                let body = t(
+                    "insight.abnormalTransaction.known.body",
+                    tx.amount.asCurrency(context.currencyCode),
+                    Int(percent.rounded())
+                )
+                let prompt = t(
+                    "insight.abnormalTransaction.known.prompt",
+                    merchant,
+                    tx.amount.asCurrency(context.currencyCode),
+                    Int(percent.rounded())
+                )
 
                 if bestMatch == nil || percent > (bestMatch?.percent ?? 0) {
-                    bestMatch = (tx, percent, tx.amount, "\(merchant) fugiu do padrao", body, prompt)
+                    bestMatch = (tx, percent, tx.amount, t("insight.abnormalTransaction.known.title", merchant), body, prompt)
                 }
             } else if tx.amount > max(100, historicalAverageTicket * 2.5) {
                 let percent = historicalAverageTicket > 0 ? ((tx.amount - historicalAverageTicket) / historicalAverageTicket) * 100 : 120
-                let body = "Primeira compra relevante em \(merchant) por \(tx.amount.asCurrency(context.currencyCode))."
-                let prompt = """
-                Detectei uma primeira compra relevante em "\(merchant)" por \(tx.amount.asCurrency(context.currencyCode)).
-                Me ajude a avaliar se ela foge do meu comportamento normal e quais cuidados devo tomar.
-                """
+                let body = t("insight.abnormalTransaction.first.body", merchant, tx.amount.asCurrency(context.currencyCode))
+                let prompt = t(
+                    "insight.abnormalTransaction.first.prompt",
+                    merchant,
+                    tx.amount.asCurrency(context.currencyCode)
+                )
 
                 if bestMatch == nil || tx.amount > (bestMatch?.amount ?? 0) {
-                    bestMatch = (tx, percent, tx.amount, "Compra atipica em \(merchant)", body, prompt)
+                    bestMatch = (tx, percent, tx.amount, t("insight.abnormalTransaction.first.title", merchant), body, prompt)
                 }
             }
         }
@@ -417,8 +436,8 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .categoryTrendUp,
-            title: "\(best.category) vem subindo",
-            body: "A categoria cresceu \(Int(best.growth.rounded()))% nos ultimos meses.",
+            title: t("insight.categoryTrendUp.title", best.category),
+            body: t("insight.categoryTrendUp.body", Int(best.growth.rounded())),
             icon: "chart.line.uptrend.xyaxis.circle.fill",
             color: .orange,
             sentiment: .alert,
@@ -432,10 +451,11 @@ struct InsightEngine {
             urgency: 60,
             basePriority: 110,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            A categoria "\(best.category)" vem crescendo e ja acumula alta de \(Int(best.growth.rounded()))%.
-            Analise o historico e me diga como frear essa tendencia.
-            """
+            chatPrompt: t(
+                "insight.categoryTrendUp.prompt",
+                best.category,
+                Int(best.growth.rounded())
+            )
         )
     }
 
@@ -463,8 +483,12 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .goalRisk,
-            title: "Meta em risco: \(best.goal.title)",
-            body: "O ritmo atual projeta \(best.projected.asCurrency(context.currencyCode)) contra meta de \(best.goal.targetAmount.asCurrency(context.currencyCode)).",
+            title: t("insight.goalRisk.title", best.goal.title),
+            body: t(
+                "insight.goalRisk.body",
+                best.projected.asCurrency(context.currencyCode),
+                best.goal.targetAmount.asCurrency(context.currencyCode)
+            ),
             icon: "target",
             color: .red,
             sentiment: .alert,
@@ -478,10 +502,12 @@ struct InsightEngine {
             urgency: 95,
             basePriority: 170,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            A meta "\(best.goal.title)" esta em risco. O gasto projetado e \(best.projected.asCurrency(context.currencyCode)) para um alvo de \(best.goal.targetAmount.asCurrency(context.currencyCode)).
-            Monte um plano de correcao objetivo para eu recuperar essa meta.
-            """
+            chatPrompt: t(
+                "insight.goalRisk.prompt",
+                best.goal.title,
+                best.projected.asCurrency(context.currencyCode),
+                best.goal.targetAmount.asCurrency(context.currencyCode)
+            )
         )
     }
 
@@ -499,8 +525,8 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .cashFlowProjection,
-            title: projectedBalance < 0 ? "Saldo pode ficar negativo" : "Saldo do mes fica apertado",
-            body: "A projecao ate o fim do mes aponta saldo de \(projectedBalance.asCurrency(context.currencyCode)).",
+            title: projectedBalance < 0 ? t("insight.cashFlowProjection.negative.title") : t("insight.cashFlowProjection.tight.title"),
+            body: t("insight.cashFlowProjection.body", projectedBalance.asCurrency(context.currencyCode)),
             icon: "wallet.bifold.fill",
             color: projectedBalance < 0 ? .red : .orange,
             sentiment: .alert,
@@ -514,10 +540,10 @@ struct InsightEngine {
             urgency: 70,
             basePriority: 115,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            Projetando saldo de \(projectedBalance.asCurrency(context.currencyCode)) ate o fim do mes.
-            Quais despesas devo segurar e qual folga minima eu deveria preservar?
-            """
+            chatPrompt: t(
+                "insight.cashFlowProjection.prompt",
+                projectedBalance.asCurrency(context.currencyCode)
+            )
         )
     }
 
@@ -534,13 +560,13 @@ struct InsightEngine {
         guard !upcoming.isEmpty else { return nil }
 
         let total = upcoming.reduce(0) { $0 + $1.amount }
-        let names = upcoming.prefix(2).map { $0.placeName ?? $0.category?.name ?? "Conta recorrente" }
+        let names = upcoming.prefix(2).map { $0.placeName ?? $0.category?.name ?? t("insight.fallback.recurringBill") }
         let preview = names.joined(separator: ", ")
 
         return makeInsight(
             kind: .billDueSoon,
-            title: "Contas vencendo em breve",
-            body: "\(upcoming.count) lancamentos recorrentes somam \(total.asCurrency(context.currencyCode)) nos proximos dias.",
+            title: t("insight.billDueSoon.title"),
+            body: t("insight.billDueSoon.body", upcoming.count, total.asCurrency(context.currencyCode)),
             icon: "calendar.badge.exclamationmark",
             color: .orange,
             sentiment: .alert,
@@ -554,10 +580,11 @@ struct InsightEngine {
             urgency: 88,
             basePriority: 60,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            Tenho contas vencendo nos proximos dias, como \(preview), somando \(total.asCurrency(context.currencyCode)).
-            Me ajude a priorizar o pagamento e encaixar isso no restante do mes.
-            """
+            chatPrompt: t(
+                "insight.billDueSoon.prompt",
+                preview,
+                total.asCurrency(context.currencyCode)
+            )
         )
     }
 
@@ -584,14 +611,14 @@ struct InsightEngine {
         guard percent >= 45 else { return nil }
 
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "pt_BR")
+        formatter.locale = LanguageManager.shared.effective.locale
         formatter.dateFormat = "d MMM"
         let peakDays = bestDays.map { formatter.string(from: $0) }.joined(separator: ", ")
 
         return makeInsight(
             kind: .spendingConcentration,
-            title: "Gastos concentrados em poucos dias",
-            body: "\(Int(percent.rounded()))% do total saiu em \(peakDays).",
+            title: t("insight.spendingConcentration.title"),
+            body: t("insight.spendingConcentration.body", Int(percent.rounded()), peakDays),
             icon: "calendar.badge.clock",
             color: .orange,
             sentiment: .alert,
@@ -605,10 +632,7 @@ struct InsightEngine {
             urgency: 58,
             basePriority: 75,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            Uma parcela grande dos meus gastos ficou concentrada em poucos dias (\(peakDays)).
-            O que esse padrao sugere e como posso distribuir melhor minhas despesas?
-            """
+            chatPrompt: t("insight.spendingConcentration.prompt", peakDays)
         )
     }
 
@@ -623,8 +647,8 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .avgTicketIncrease,
-            title: "Ticket medio subiu",
-            body: "Cada compra esta saindo em media \(Int(percent.rounded()))% mais cara.",
+            title: t("insight.avgTicketIncrease.title"),
+            body: t("insight.avgTicketIncrease.body", Int(percent.rounded())),
             icon: "creditcard.and.123",
             color: .orange,
             sentiment: .alert,
@@ -638,10 +662,11 @@ struct InsightEngine {
             urgency: 55,
             basePriority: 65,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            O ticket medio das minhas compras subiu de \(previousAverage.asCurrency(context.currencyCode)) para \(currentAverage.asCurrency(context.currencyCode)).
-            Analise o que pode estar puxando esse aumento.
-            """
+            chatPrompt: t(
+                "insight.avgTicketIncrease.prompt",
+                previousAverage.asCurrency(context.currencyCode),
+                currentAverage.asCurrency(context.currencyCode)
+            )
         )
     }
 
@@ -658,8 +683,8 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .streakSaving,
-            title: "Sequencia de queda nos gastos",
-            body: "Voce reduziu despesas por 3 periodos seguidos, com queda de \(Int(percent.rounded()))%.",
+            title: t("insight.streakSaving.title"),
+            body: t("insight.streakSaving.body", Int(percent.rounded())),
             icon: "leaf.fill",
             color: .green,
             sentiment: .opportunity,
@@ -673,10 +698,7 @@ struct InsightEngine {
             urgency: 25,
             basePriority: 40,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            Meus gastos vem caindo por varios periodos seguidos.
-            O que estou fazendo certo e como posso consolidar esse padrao sem perder qualidade de vida?
-            """
+            chatPrompt: t("insight.streakSaving.prompt")
         )
     }
 
@@ -696,13 +718,13 @@ struct InsightEngine {
         guard percent >= 35 else { return nil }
 
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "pt_BR")
+        formatter.locale = LanguageManager.shared.effective.locale
         let weekdayName = formatter.weekdaySymbols[(peak.key - 1 + 7) % 7].capitalized
 
         return makeInsight(
             kind: .behaviorPattern,
-            title: "Padrao de gasto em \(weekdayName)",
-            body: "\(Int(percent.rounded()))% dos gastos recentes se concentram nesse dia da semana.",
+            title: t("insight.behaviorPattern.title", weekdayName),
+            body: t("insight.behaviorPattern.body", Int(percent.rounded())),
             icon: "clock.arrow.trianglehead.counterclockwise.rotate.90",
             color: .blue,
             sentiment: .neutral,
@@ -716,10 +738,7 @@ struct InsightEngine {
             urgency: 20,
             basePriority: 30,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            Notei concentracao de gastos em \(weekdayName).
-            O que esse padrao pode indicar sobre meu comportamento financeiro e como posso usar isso a meu favor?
-            """
+            chatPrompt: t("insight.behaviorPattern.prompt", weekdayName)
         )
     }
 
@@ -749,8 +768,8 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .categoryOverBaseline,
-            title: "\(best.category) acima do historico",
-            body: "A categoria esta \(Int(best.percent.rounded()))% acima da sua base recente.",
+            title: t("insight.categoryOverBaseline.title", best.category),
+            body: t("insight.categoryOverBaseline.body", Int(best.percent.rounded())),
             icon: "chart.bar.xaxis",
             color: .orange,
             sentiment: .alert,
@@ -764,10 +783,11 @@ struct InsightEngine {
             urgency: 50,
             basePriority: 100,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            A categoria "\(best.category)" passou da sua media recente em \(Int(best.percent.rounded()))%.
-            Analise esse excesso e sugira limites realistas para os proximos meses.
-            """
+            chatPrompt: t(
+                "insight.categoryOverBaseline.prompt",
+                best.category,
+                Int(best.percent.rounded())
+            )
         )
     }
 
@@ -787,8 +807,8 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .topCategory,
-            title: "\(top.key) lidera seus gastos",
-            body: "A categoria responde por \(Int(percent.rounded()))% do total pago no mes.",
+            title: t("insight.topCategory.title", top.key),
+            body: t("insight.topCategory.body", Int(percent.rounded())),
             icon: icons[top.key] ?? "tag.fill",
             color: .blue,
             sentiment: .neutral,
@@ -802,10 +822,11 @@ struct InsightEngine {
             urgency: 35,
             basePriority: 70,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            A categoria "\(top.key)" esta liderando meus gastos do mes com \(top.value.asCurrency(context.currencyCode)).
-            O que posso revisar nessa categoria e como definir um limite melhor?
-            """
+            chatPrompt: t(
+                "insight.topCategory.prompt",
+                top.key,
+                top.value.asCurrency(context.currencyCode)
+            )
         )
     }
 
@@ -835,8 +856,8 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .installments,
-            title: "\(groupCount) parcelamento\(groupCount > 1 ? "s" : "") em aberto",
-            body: "Ainda ha \(remaining) parcelas futuras somando \(totalFuture.asCurrency(context.currencyCode)).",
+            title: t(groupCount > 1 ? "insight.installments.titlePlural" : "insight.installments.titleSingular", groupCount),
+            body: t("insight.installments.body", remaining, totalFuture.asCurrency(context.currencyCode)),
             icon: "square.stack.fill",
             color: .purple,
             sentiment: .neutral,
@@ -850,10 +871,12 @@ struct InsightEngine {
             urgency: 30,
             basePriority: 50,
             currencyCode: context.currencyCode,
-            chatPrompt: """
-            Tenho \(groupCount) parcelamentos em aberto, com \(remaining) parcelas futuras somando \(totalFuture.asCurrency(context.currencyCode)).
-            Me ajude a avaliar o impacto disso nos proximos meses.
-            """
+            chatPrompt: t(
+                "insight.installments.prompt",
+                groupCount,
+                remaining,
+                totalFuture.asCurrency(context.currencyCode)
+            )
         )
     }
 
@@ -928,7 +951,7 @@ struct InsightEngine {
         if let merchant, !merchant.isEmpty {
             return merchant.lowercased()
         }
-        return (transaction.category?.name ?? "sem-categoria").lowercased()
+        return (transaction.category?.name ?? t("insight.fallback.uncategorized")).lowercased()
     }
 
     private static func spentAmount(for goal: Goal, in transactions: [Transaction]) -> Double {

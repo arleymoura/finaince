@@ -86,6 +86,15 @@ enum ImportStatementStore {
         try saveSummary(summary)
     }
 
+    static func deleteCurrent() {
+        if let fileURL = currentFileURL() {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+        if let metadataURL = try? metadataURL() {
+            try? FileManager.default.removeItem(at: metadataURL)
+        }
+    }
+
     private static func saveSummary(_ summary: ImportedStatementSummary) throws {
         let data = try JSONEncoder().encode(summary)
         try data.write(to: try metadataURL(), options: .atomic)

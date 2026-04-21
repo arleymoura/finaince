@@ -1,14 +1,15 @@
 import Foundation
 import SwiftData
 
+
 enum AccountType: String, Codable, CaseIterable {
     case checking = "checking"
     case creditCard = "credit_card"
 
     var label: String {
         switch self {
-        case .checking:    return "Conta Corrente"
-        case .creditCard:  return "Cartão de Crédito"
+        case .checking:    return t("account.type.checking")
+        case .creditCard:  return t("account.type.creditCard")
         }
     }
 
@@ -35,7 +36,7 @@ final class Account {
 
     var family: Family?
 
-    @Relationship(deleteRule: .nullify, inverse: \Transaction.account)
+    @Relationship(deleteRule: .cascade, inverse: \Transaction.account)
     var transactions: [Transaction] = []
 
     init(

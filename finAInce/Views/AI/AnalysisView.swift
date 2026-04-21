@@ -34,7 +34,7 @@ struct AnalysisView: View {
                 }
                 .padding()
             }
-            .navigationTitle("Análise IA")
+            .navigationTitle(t("ai.analysisTitle"))
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button { generateAnalysis() } label: {
@@ -52,7 +52,7 @@ struct AnalysisView: View {
         VStack(spacing: 16) {
             ProgressView()
                 .scaleEffect(1.5)
-            Text("Analisando seus gastos...")
+            Text(t("ai.analyzing"))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
@@ -62,7 +62,7 @@ struct AnalysisView: View {
     private func analysisContent(_ analysis: AIAnalysis) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Label("Gerado por \(analysis.provider)", systemImage: "sparkles")
+                Label(t("ai.generatedByProvider", analysis.provider), systemImage: "sparkles")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -86,14 +86,14 @@ struct AnalysisView: View {
             Image(systemName: "chart.line.uptrend.xyaxis.circle")
                 .font(.system(size: 56))
                 .foregroundStyle(.secondary)
-            Text("Nenhuma análise gerada")
+            Text(t("ai.noAnalysis"))
                 .font(.headline)
                 .foregroundStyle(.secondary)
-            Text("Toque no botão acima para gerar uma análise dos seus gastos com IA.")
+            Text(t("ai.noAnalysisDesc"))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Gerar Análise") {
+            Button(t("ai.generate")) {
                 generateAnalysis()
             }
             .buttonStyle(.borderedProminent)
@@ -109,9 +109,9 @@ struct AnalysisView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             let placeholder = AIAnalysis(
                 monthRef: monthRef,
-                provider: "Pendente configuração",
+                provider: t("ai.pendingConfiguration"),
                 type: .monthlySummary,
-                content: "Configure sua chave de API em **Configurações → IA** para gerar análises automáticas dos seus gastos."
+                content: t("ai.configureForAutomaticAnalysis")
             )
             modelContext.insert(placeholder)
             isLoading = false

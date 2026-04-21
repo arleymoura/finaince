@@ -2,37 +2,54 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleDocumentTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleTypeName</key>
-            <string>Finance Import Files</string>
-            <key>CFBundleTypeRole</key>
-            <string>Editor</string>
-            <key>LSHandlerRank</key>
-            <string>Alternate</string>
-            <key>CFBundleTypeExtensions</key>
-            <array>
-                <string>csv</string>
-                <string>tsv</string>
-                <string>txt</string>
-                <string>xlsx</string>
-                <string>xls</string>
-            </array>
-            <key>LSItemContentTypes</key>
-            <array>
-                <string>public.comma-separated-values-text</string>
-                <string>public.tab-separated-values-text</string>
-                <string>public.plain-text</string>
-                <string>public.text</string>
-                <string>public.data</string>
-                <string>org.openxmlformats.spreadsheetml.sheet</string>
-                <string>com.microsoft.excel.xls</string>
-                <string>com.microsoft.excel.xlsx</string>
-            </array>
-        </dict>
-    </array>
-    <key>LSSupportsOpeningDocumentsInPlace</key>
-    <true/>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>csv</string>
+				<string>tsv</string>
+				<string>txt</string>
+				<string>xlsx</string>
+				<string>xls</string>
+			</array>
+			<key>CFBundleTypeName</key>
+			<string>Finance Import Files</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.comma-separated-values-text</string>
+				<string>public.tab-separated-values-text</string>
+				<string>public.plain-text</string>
+				<string>public.text</string>
+				<string>public.data</string>
+				<string>org.openxmlformats.spreadsheetml.sheet</string>
+				<string>com.microsoft.excel.xls</string>
+				<string>com.microsoft.excel.xlsx</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.moura.finaince</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>finaince</string>
+			</array>
+		</dict>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Usamos a camera para escanear recibos e anexar imagens as suas transacoes e conversas.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Usamos sua localizacao para sugerir estabelecimentos proximos ao registrar uma transacao.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Usamos sua biblioteca de fotos para escolher recibos, imagens de perfil e anexos para suas transacoes e conversas.</string>
 </dict>
 </plist>

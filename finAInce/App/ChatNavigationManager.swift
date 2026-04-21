@@ -5,6 +5,7 @@ struct ChatNavigationRequest: Identifiable, Equatable {
     let prompt: String
     let deepAnalysisFocus: String?
     let shouldOfferDeepAnalysis: Bool
+    let startNewChat: Bool
 }
 
 @Observable final class ChatNavigationManager {
@@ -17,12 +18,14 @@ struct ChatNavigationRequest: Identifiable, Equatable {
     func openChat(
         prompt: String,
         deepAnalysisFocus: String? = nil,
-        shouldOfferDeepAnalysis: Bool = false
+        shouldOfferDeepAnalysis: Bool = false,
+        startNewChat: Bool = false
     ) {
         pendingRequest = ChatNavigationRequest(
             prompt: prompt,
             deepAnalysisFocus: deepAnalysisFocus,
-            shouldOfferDeepAnalysis: shouldOfferDeepAnalysis
+            shouldOfferDeepAnalysis: shouldOfferDeepAnalysis,
+            startNewChat: startNewChat
         )
     }
 

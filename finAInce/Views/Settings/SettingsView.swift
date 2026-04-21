@@ -5,9 +5,13 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var aiSettingsList: [AISettings]
 
-    @State private var apiKey = ""
-    @State private var showApiKey = false
+    @AppStorage("notif.pendingExpense") private var paymentAlert = false
+    @AppStorage("notif.goalAlert")      private var goalAlert   = false
+    @AppStorage("app.currencyCode")     private var currencyCode = "BRL"
+    @AppStorage("app.colorScheme")      private var colorScheme  = "light"
+
     @State private var showSavedAlert = false
+    private var lm: LanguageManager { LanguageManager.shared }
 
     var aiSettings: AISettings? { aiSettingsList.first }
 
@@ -16,116 +20,171 @@ struct SettingsView: View {
             Form {
                 familySection
                 aiSection
+                languageSection
+                notificationsSection
                 preferencesSection
                 aboutSection
             }
-            .navigationTitle("Configurações")
-            .alert("Configurações salvas", isPresented: $showSavedAlert) {
-                Button("OK") { }
+            .navigationTitle(t("settings.title"))
+            .alert(t("settings.saved"), isPresented: $showSavedAlert) {
+                Button(t("common.ok")) { }
             }
+            .onAppear(perform: normalizeColorScheme)
         }
     }
 
     // MARK: - Sections
 
     private var familySection: some View {
-        Section("Família") {
+        Section(t("settings.family")) {
             NavigationLink {
-                Text("Gerenciar Membros — em breve")
+                Text(t("settings.familyComing"))
             } label: {
-                Label("Membros da família", systemImage: "person.2.fill")
+                Label(t("settings.familyMembers"), systemImage: "person.2.fill")
             }
         }
     }
 
     private var aiSection: some View {
         Section {
-            if let settings = aiSettings {
-                Picker("Provedor", selection: Binding(
-                    get: { settings.provider },
-                    set: { settings.provider = $0; settings.model = $0.defaultModel }
-                )) {
-                    ForEach(AIProvider.allCases, id: \.self) {
-                        Text($0.label).tag($0)
-                    }
-                }
-
-                Picker("Modelo", selection: Binding(
-                    get: { settings.model },
-                    set: { settings.model = $0 }
-                )) {
-                    ForEach(settings.provider.availableModels, id: \.self) {
-                        Text($0).tag($0)
-                    }
-                }
-
-                HStack {
-                    Label("Chave de API", systemImage: "key.fill")
-                    Spacer()
-                    Group {
-                        if showApiKey {
-                            TextField("sk-...", text: $apiKey)
-                                .multilineTextAlignment(.trailing)
-                        } else {
-                            SecureField("sk-...", text: $apiKey)
-                                .multilineTextAlignment(.trailing)
+            NavigationLink(destination: AIProviderSettingsView()) {
+                HStack(spacing: 12) {
+                    if let settings = aiSettings {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(settings.provider.accentColor.opacity(0.15))
+                                .frame(width: 32, height: 32)
+                            Image(systemName: settings.provider.iconName)
+                                .font(.subheadline)
+                                .foregroundStyle(settings.provider.accentColor)
                         }
-                    }
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .frame(maxWidth: 180)
-
-                    Button {
-                        showApiKey.toggle()
-                    } label: {
-                        Image(systemName: showApiKey ? "eye.slash" : "eye")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(settings.provider.label)
+                                .font(.subheadline)
+                            Text(settings.provider.modelDisplayName(settings.model))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if settings.isConfigured {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .font(.subheadline)
+                        }
+                    } else {
+                        Image(systemName: "brain")
+                            .foregroundStyle(.secondary)
+                        Text(t("settings.aiNotConfigured"))
                             .foregroundStyle(.secondary)
                     }
                 }
-
-                Button("Salvar Chave de API") {
-                    saveApiKey(settings)
-                }
-                .disabled(apiKey.isEmpty)
-
-                if settings.isConfigured {
-                    Label("API configurada", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .font(.caption)
-                }
             }
         } header: {
-            Text("Inteligência Artificial")
+            Text(t("settings.ai"))
         } footer: {
-            Text("A chave é armazenada com segurança no iOS Keychain do seu dispositivo e nunca enviada para nossos servidores.")
+            Text(t("settings.aiFooter"))
         }
     }
 
-    private var preferencesSection: some View {
-        Section("Preferências") {
-            LabeledContent("Moeda", value: "BRL (R$)")
+    // MARK: - Language Section
 
-            Picker("Tema", selection: .constant("auto")) {
-                Text("Automático").tag("auto")
-                Text("Claro").tag("light")
-                Text("Escuro").tag("dark")
+    private var languageSection: some View {
+        Section(t("settings.language")) {
+            ForEach(AppLanguage.allCases) { lang in
+                Button {
+                    LanguageManager.shared.language = lang
+                } label: {
+                    HStack(spacing: 14) {
+                        Text(lang.flag)
+                            .font(.title3)
+                            .frame(width: 36)
+                        Text(lang.displayName)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        if lm.language == lang {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(Color.accentColor)
+                                .fontWeight(.semibold)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
             }
+        }
+    }
+
+    // MARK: - Notifications Section
+
+    private var notificationsSection: some View {
+        Section {
+            Toggle(isOn: $paymentAlert) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(t("profile.notifPayment"))
+                        .font(.subheadline)
+                    Text(t("profile.notifPaymentDesc"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .onChange(of: paymentAlert) { _, enabled in
+                Task {
+                    if enabled { await NotificationService.shared.requestPermission() }
+                    NotificationService.shared.schedulePaymentNotifications(context: modelContext)
+                }
+            }
+
+            Toggle(isOn: $goalAlert) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(t("profile.notifGoal"))
+                        .font(.subheadline)
+                    Text(t("profile.notifGoalDesc"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .onChange(of: goalAlert) { _, enabled in
+                if enabled {
+                    Task {
+                        await NotificationService.shared.requestPermission()
+                        NotificationService.shared.checkGoalAlerts(context: modelContext)
+                    }
+                }
+            }
+        } header: {
+            Text(t("profile.notifications"))
+        } footer: {
+            Text(t("profile.notifFooter"))
+        }
+    }
+
+    // MARK: - Preferences Section
+
+    private var preferencesSection: some View {
+        Section(t("settings.preferences")) {
+            Picker(t("settings.currency"), selection: $currencyCode) {
+                ForEach(OnboardingCurrency.all) { c in
+                    Text("\(c.flag)  \(c.code) (\(c.symbol)) · \(c.name)")
+                        .tag(c.code)
+                }
+            }
+
+            Picker(t("settings.theme"), selection: $colorScheme) {
+                Text(t("settings.themeLight")).tag("light")
+                Text(t("settings.themeDark")).tag("dark")
+            }
+        }
+    }
+
+    private func normalizeColorScheme() {
+        if colorScheme == "system" {
+            colorScheme = "light"
         }
     }
 
     private var aboutSection: some View {
-        Section("Sobre") {
-            LabeledContent("Versão", value: "1.0.0 (Sprint 1)")
-            LabeledContent("Design", value: "Apple HIG + SF Symbols")
+        Section(t("settings.about")) {
+            LabeledContent(t("settings.version"), value: "1.0.0 (Sprint 1)")
+            LabeledContent(t("settings.design"),  value: t("settings.designValue"))
         }
-    }
-
-    // MARK: - Actions
-
-    private func saveApiKey(_ settings: AISettings) {
-        // Sprint 4: salvar no iOS Keychain
-        // KeychainHelper.save(apiKey, for: settings.provider)
-        settings.isConfigured = !apiKey.isEmpty
-        showSavedAlert = true
     }
 }

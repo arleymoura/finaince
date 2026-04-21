@@ -2,15 +2,13 @@ import Foundation
 import SwiftData
 
 enum CategoryType: String, Codable, CaseIterable {
-    case income  = "income"
     case expense = "expense"
     case both    = "both"
 
     var label: String {
         switch self {
-        case .income:  return "Receita"
-        case .expense: return "Despesa"
-        case .both:    return "Ambos"
+        case .expense: return t("transaction.type.expense")
+        case .both:    return t("transaction.general")
         }
     }
 }

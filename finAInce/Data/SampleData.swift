@@ -61,37 +61,39 @@ struct SampleData {
             place: String,
             account: Account,
             category: Category?,
-            subcategory: Category?
+            subcategory: Category?,
+            isPaid: Bool
         )
+
+        let today = cal.component(.day, from: now)
 
         let definitions: [TxDef] = [
 
-            // Renda
-            (.income, 8_500.00, date(5),  "Salário",        checking,   cat("Renda"),       sub("Salário",          of: "Renda")),
-            (.income, 1_200.00, date(10), "Freelance",       checking,   cat("Renda"),       sub("Freelance",         of: "Renda")),
+            // Moradia — aluguel e condomínio como pendentes (vence depois do dia atual)
+            (.expense, 1_800.00, date(5),  "Aluguel",        checking,   cat("Moradia"),     sub("Aluguel",        of: "Moradia"),     date(5)  <= now),
+            (.expense,   180.00, date(20), "Condomínio",     checking,   cat("Moradia"),     sub("Condomínio",     of: "Moradia"),     today >= 20),
+            (.expense,    89.90, date(15), "Vivo Fibra",     checking,   cat("Moradia"),     sub("Internet",       of: "Moradia"),     today >= 15),
+            (.expense,   120.00, date(25), "Energia",        checking,   cat("Moradia"),     sub("Energia",        of: "Moradia"),     today >= 25),
 
-            // Moradia
-            (.expense, 1_800.00, date(5),  "Aluguel",        checking,   cat("Moradia"),     sub("Aluguel",           of: "Moradia")),
-            (.expense,   180.00, date(7),  "Condomínio",     checking,   cat("Moradia"),     sub("Condomínio",        of: "Moradia")),
-            (.expense,    89.90, date(8),  "Internet",       checking,   cat("Moradia"),     sub("Internet",          of: "Moradia")),
+            // Supermercado
+            (.expense,   320.00, date(3),  "Supermercado",   checking,   cat("Supermercado"), sub("Mercado",        of: "Supermercado"), true),
+            (.expense,   165.00, date(11), "Supermercado",   checking,   cat("Supermercado"), sub("Mercado",        of: "Supermercado"), date(11) <= now),
 
-            // Alimentação
-            (.expense,   320.00, date(3),  "Supermercado",   checking,   cat("Alimentação"), sub("Supermercado",      of: "Alimentação")),
-            (.expense,    75.50, date(6),  "iFood",          creditCard, cat("Alimentação"), sub("Delivery",          of: "Alimentação")),
-            (.expense,    45.00, date(9),  "Restaurante",    creditCard, cat("Alimentação"), sub("Restaurante",       of: "Alimentação")),
-            (.expense,   165.00, date(11), "Supermercado",   checking,   cat("Alimentação"), sub("Supermercado",      of: "Alimentação")),
+            // Restaurantes
+            (.expense,    75.50, date(6),  "iFood",          creditCard, cat("Restaurantes"), sub("Delivery",       of: "Restaurantes"), true),
+            (.expense,    45.00, date(9),  "Restaurante",    creditCard, cat("Restaurantes"), sub("Almoço / Jantar", of: "Restaurantes"), date(9) <= now),
 
             // Transporte
-            (.expense,   250.00, date(4),  "Combustível",    checking,   cat("Transporte"),  sub("Combustível",       of: "Transporte")),
-            (.expense,    32.00, date(8),  "Uber",           creditCard, cat("Transporte"),  sub("Uber / Táxi",       of: "Transporte")),
+            (.expense,   250.00, date(4),  "Combustível",    checking,   cat("Transporte"),  sub("Combustível",    of: "Transporte"),  true),
+            (.expense,    32.00, date(8),  "Uber",           creditCard, cat("Transporte"),  sub("Uber / Táxi",    of: "Transporte"),  true),
 
-            // Saúde
-            (.expense,   380.00, date(2),  "Plano de Saúde", checking,   cat("Saúde"),       sub("Plano de Saúde",    of: "Saúde")),
-            (.expense,    65.00, date(6),  "Farmácia",       creditCard, cat("Saúde"),       sub("Farmácia",          of: "Saúde")),
+            // Saúde — plano pendente, farmácia paga
+            (.expense,   380.00, date(10), "Plano de Saúde", checking,   cat("Saúde"),       sub("Plano de Saúde", of: "Saúde"),       today >= 10),
+            (.expense,    65.00, date(6),  "Farmácia",       creditCard, cat("Saúde"),       sub("Farmácia",       of: "Saúde"),       true),
 
             // Lazer
-            (.expense,    49.90, date(1),  "Netflix",        creditCard, cat("Lazer"),       sub("Assinaturas",       of: "Lazer")),
-            (.expense,   120.00, date(12), "Barzinho",       creditCard, cat("Lazer"),       sub("Bares",             of: "Lazer")),
+            (.expense,    49.90, date(1),  "Netflix",        creditCard, cat("Lazer"),       sub("Assinaturas",    of: "Lazer"),       true),
+            (.expense,   120.00, date(12), "Barzinho",       creditCard, cat("Lazer"),       sub("Bares",          of: "Lazer"),       date(12) <= now),
         ]
 
         for def in definitions {
@@ -99,7 +101,8 @@ struct SampleData {
                 type: def.type,
                 amount: def.amount,
                 date: def.date,
-                placeName: def.place
+                placeName: def.place,
+                isPaid: def.isPaid
             )
             tx.account     = def.account
             tx.category    = def.category

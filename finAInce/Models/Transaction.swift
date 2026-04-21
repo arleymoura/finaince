@@ -2,21 +2,18 @@ import Foundation
 import SwiftData
 
 enum TransactionType: String, Codable, CaseIterable {
-    case income   = "income"
     case expense  = "expense"
     case transfer = "transfer"
 
     var label: String {
         switch self {
-        case .income:   return "Receita"
-        case .expense:  return "Despesa"
-        case .transfer: return "Transferência"
+        case .expense:  return t("transaction.type.expense")
+        case .transfer: return t("transaction.type.transfer")
         }
     }
 
     var icon: String {
         switch self {
-        case .income:   return "arrow.down.circle.fill"
         case .expense:  return "arrow.up.circle.fill"
         case .transfer: return "arrow.left.arrow.right.circle.fill"
         }
@@ -24,7 +21,6 @@ enum TransactionType: String, Codable, CaseIterable {
 
     var colorHex: String {
         switch self {
-        case .income:   return "#34C759"
         case .expense:  return "#FF3B30"
         case .transfer: return "#007AFF"
         }
@@ -38,9 +34,9 @@ enum RecurrenceType: String, Codable, CaseIterable {
 
     var label: String {
         switch self {
-        case .none:        return "Nenhuma"
-        case .monthly:     return "Mensal"
-        case .installment: return "Parcelada"
+        case .none:        return t("recurrence.none")
+        case .monthly:     return t("recurrence.monthly")
+        case .installment: return t("recurrence.installment")
         }
     }
 }
@@ -60,11 +56,17 @@ final class Transaction {
     var installmentGroupId: UUID?
     var createdAt: Date
 
+    var isPaid: Bool
+    /// Hash used to detect re-imports of the same bank statement row.
+    /// Format: "yyyy-MM-dd|description|amount" — set automatically on import.
+    var importHash: String?
     var family: Family?
     var account: Account?
     var category: Category?
     var subcategory: Category?
     var destinationAccount: Account?
+    @Relationship(deleteRule: .cascade, inverse: \ReceiptAttachment.transaction)
+    var receiptAttachments: [ReceiptAttachment] = []
 
     init(
         type: TransactionType,
@@ -76,7 +78,8 @@ final class Transaction {
         recurrenceType: RecurrenceType = .none,
         installmentIndex: Int? = nil,
         installmentTotal: Int? = nil,
-        installmentGroupId: UUID? = nil
+        installmentGroupId: UUID? = nil,
+        isPaid: Bool = true
     ) {
         self.id = UUID()
         self.type = type
@@ -89,14 +92,15 @@ final class Transaction {
         self.installmentIndex = installmentIndex
         self.installmentTotal = installmentTotal
         self.installmentGroupId = installmentGroupId
+        self.isPaid = isPaid
         self.createdAt = Date()
     }
 }
 
-// MARK: - Installment helper
+// MARK: - Recurrence helpers
 extension Transaction {
+
     /// Gera as transações futuras para um parcelamento.
-    /// Deve ser chamado no momento da criação da primeira parcela.
     static func generateInstallments(
         from base: Transaction,
         total: Int,
@@ -122,13 +126,51 @@ extension Transaction {
                 recurrenceType: .installment,
                 installmentIndex: index,
                 installmentTotal: total,
-                installmentGroupId: groupId
+                installmentGroupId: groupId,
+                isPaid: false
             )
-            installment.family = base.family
+            installment.family  = base.family
             installment.account = base.account
-            installment.category = base.category
+            installment.category    = base.category
             installment.subcategory = base.subcategory
             modelContext.insert(installment)
+        }
+    }
+
+    /// Gera 60 meses de recorrência mensal a partir da transação base.
+    static func generateMonthlyRecurrences(
+        from base: Transaction,
+        months: Int = 60,
+        in modelContext: ModelContext
+    ) {
+        guard months > 1 else { return }
+        let groupId = UUID()
+        base.installmentIndex = 1
+        base.installmentTotal = months
+        base.installmentGroupId = groupId
+
+        for index in 2...months {
+            var comps = DateComponents()
+            comps.month = index - 1
+            let futureDate = Calendar.current.date(byAdding: comps, to: base.date) ?? base.date
+
+            let recurring = Transaction(
+                type: base.type,
+                amount: base.amount,
+                date: futureDate,
+                placeName: base.placeName,
+                notes: base.notes,
+                recurrenceType: .monthly,
+                installmentIndex: index,
+                installmentTotal: months,
+                installmentGroupId: groupId,
+                isPaid: false
+            )
+            recurring.family  = base.family
+            recurring.account = base.account
+            recurring.category    = base.category
+            recurring.subcategory = base.subcategory
+            modelContext.insert(recurring)
         }
     }
 }

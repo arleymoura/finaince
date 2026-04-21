@@ -1,0 +1,442 @@
+import SwiftUI
+import SwiftData
+import PhotosUI
+
+struct ProfileView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Query private var goals: [Goal]
+    @Query private var aiSettingsList: [AISettings]
+
+    @AppStorage("user.name")  private var userName  = "Meu Perfil"
+    @AppStorage("user.photo") private var photoData: Data = Data()
+
+    @State private var showNameEdit   = false
+    @State private var photoPicker: PhotosPickerItem? = nil
+    @State private var profileImage: Image? = nil
+    @State private var deepLinkedGoal: Goal? = nil
+    @State private var deepLinkManager = DeepLinkManager.shared
+    @State private var selectedAccount: Account?
+    @State private var showCreateAccount = false
+    
+    var aiSettings: AISettings? { aiSettingsList.first }
+    
+    var body: some View {
+        NavigationStack {
+            profileList
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    profileHeaderCard
+                }
+                .toolbar(.hidden, for: .navigationBar)
+                .onChange(of: photoPicker) { _, item in
+                    Task {
+                        if let data = try? await item?.loadTransferable(type: Data.self) {
+                            photoData = data
+                            if let ui = UIImage(data: data) {
+                                profileImage = Image(uiImage: ui)
+                            }
+                        }
+                    }
+                }
+                .onAppear {
+                    loadPhoto()
+                    handleDeepLink(deepLinkManager.pendingDeepLink)
+                }
+                .onChange(of: deepLinkManager.pendingDeepLink) { _, deepLink in
+                    handleDeepLink(deepLink)
+                }
+                .sheet(item: $deepLinkedGoal) { goal in
+                    GoalFormView(goal: goal)
+                }
+                .sheet(item: $selectedAccount) { account in
+                    AccountFormView(account: account)
+                        .presentationDetents([.medium, .large])
+                }
+                .sheet(isPresented: $showCreateAccount) {
+                    AccountFormView()
+                        .presentationDetents([.medium, .large])
+                }
+        }
+    }
+
+    // MARK: - Deep Links
+
+    private func handleDeepLink(_ deepLink: DeepLink?) {
+        guard case let .goal(id) = deepLink else { return }
+
+        guard let goal = goals.first(where: { matchesDeepLinkID(id, uuid: $0.id) }) else {
+            deepLinkManager.routeToHome()
+            return
+        }
+
+        deepLinkedGoal = goal
+        deepLinkManager.consume(.goal(id: id))
+    }
+
+    private func matchesDeepLinkID(_ id: String, uuid: UUID) -> Bool {
+        uuid.uuidString.caseInsensitiveCompare(id) == .orderedSame
+    }
+
+    private var profileList: some View {
+        List {
+            Section {
+                NavigationLink {
+                    GoalsListView()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "target")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 32, height: 32)
+                            .background(Color.accentColor.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                        Text(t("profile.goals"))
+                            .font(.subheadline)
+                            .foregroundStyle(.primary)
+
+                        Spacer()
+
+                        Text(t("profile.goalsConfigured", goals.count))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text(t("profile.goals"))
+            }
+
+            AccountsProfileSection(
+                selectedAccount: $selectedAccount,
+                showCreateAccount: $showCreateAccount
+            )
+            
+            Section {
+                NavigationLink(destination: AIProviderSettingsView()) {
+                    HStack(spacing: 12) {
+                        if let settings = aiSettings {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(settings.provider.accentColor.opacity(0.15))
+                                    .frame(width: 32, height: 32)
+                                Image(systemName: settings.provider.iconName)
+                                    .font(.subheadline)
+                                    .foregroundStyle(settings.provider.accentColor)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(settings.provider.label)
+                                    .font(.subheadline)
+                                Text(settings.provider.modelDisplayName(settings.model))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if settings.isConfigured {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                                    .font(.subheadline)
+                            }
+                        } else {
+                            Image(systemName: "brain")
+                                .foregroundStyle(.secondary)
+                            Text(t("settings.aiNotConfigured"))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            } header: {
+                Text(t("settings.ai"))
+            } footer: {
+                Text(t("settings.aiFooter"))
+            }
+            
+
+            // App
+            Section(t("profile.app")) {
+                NavigationLink {
+                    CategoryManagerView()
+                } label: {
+                    Label(t("profile.manageCategories"), systemImage: "tag.fill")
+                }
+                NavigationLink {
+                    SettingsView()
+                } label: {
+                    Label(t("profile.settings"), systemImage: "gearshape.fill")
+                }
+            }
+
+            // Debug tools — visível apenas em builds de desenvolvimento
+            #if DEBUG
+            Section {
+                Button {
+                    SampleData.seed(in: modelContext)
+                } label: {
+                    Label(t("profile.seedData"), systemImage: "wand.and.stars")
+                        .foregroundStyle(.orange)
+                }
+
+                Button {
+                    UserDefaults.standard.removeObject(forKey: "ftu.dashboard.v1")
+                } label: {
+                    Label(t("profile.resetDashboardTutorial"), systemImage: "arrow.counterclockwise")
+                        .foregroundStyle(.blue)
+                }
+
+                Button(role: .destructive) {
+                    resetAllData()
+                } label: {
+                    Label(t("profile.resetAll"), systemImage: "trash.fill")
+                }
+            } header: {
+                Text(t("profile.dev"))
+            } footer: {
+                Text(t("profile.devFooter"))
+            }
+            #endif
+        }
+        .listStyle(.insetGrouped)
+        .contentMargins(.top, 12, for: .scrollContent)
+        .environment(\.defaultMinListHeaderHeight, 0)
+        .listSectionSpacing(12)
+    }
+
+    // MARK: - Profile Header
+
+    private var profileHeaderCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(t("profile.title"))
+                .font(.largeTitle.weight(.bold))
+                .foregroundStyle(.primary)
+
+            HStack(spacing: 16) {
+                PhotosPicker(selection: $photoPicker, matching: .images) {
+                    ZStack(alignment: .bottomTrailing) {
+                        Group {
+                            if let profileImage {
+                                profileImage
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                Circle()
+                                    .fill(LinearGradient(
+                                        colors: [.accentColor.opacity(0.8), .accentColor],
+                                        startPoint: .topLeading, endPoint: .bottomTrailing
+                                    ))
+                                    .overlay(
+                                        Text(initials)
+                                            .font(.system(size: 30, weight: .bold))
+                                            .foregroundStyle(.white)
+                                    )
+                            }
+                        }
+                        .frame(width: 74, height: 74)
+                        .clipShape(Circle())
+
+                        Circle()
+                            .fill(Color(.systemBackground))
+                            .frame(width: 26, height: 26)
+                            .overlay(
+                                Image(systemName: "camera.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            )
+                            .shadow(radius: 2)
+                    }
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    showNameEdit = true
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(userName)
+                            .font(.title3.bold())
+                            .foregroundStyle(.primary)
+                        Text(t("profile.tapToEdit"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .alert(t("profile.yourName"), isPresented: $showNameEdit) {
+                    TextField(t("profile.yourName"), text: $userName)
+                    Button(t("common.ok")) {}
+                }
+
+                Spacer()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.top, 16)
+        .padding(.bottom, 20)
+        .background {
+            // Rounded bottom card shape
+            UnevenRoundedRectangle(
+                cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24)
+            )
+            .fill(Color(.systemBackground))
+            // Extend white fill behind status bar (above the card's own frame)
+            .ignoresSafeArea(edges: .top)
+        }
+        .shadow(color: Color.black.opacity(0.06), radius: 10, x: 0, y: 4)
+    }
+
+    private var emptyGoals: some View {
+        VStack(spacing: 8) {
+            Text("🎯")
+                .font(.system(size: 32))
+            Text(t("profile.noGoals"))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+    }
+
+    // MARK: - Helpers
+
+    private var initials: String {
+        let parts = userName.split(separator: " ")
+        let letters = parts.prefix(2).compactMap { $0.first }
+        return letters.isEmpty ? "?" : String(letters).uppercased()
+    }
+
+    private func loadPhoto() {
+        guard !photoData.isEmpty, let ui = UIImage(data: photoData) else { return }
+        profileImage = Image(uiImage: ui)
+    }
+
+    #if DEBUG
+    private func resetAllData() {
+        try? modelContext.delete(model: Transaction.self)
+        try? modelContext.delete(model: Account.self)
+        try? modelContext.delete(model: Category.self)
+        try? modelContext.delete(model: Goal.self)
+        try? modelContext.delete(model: ChatConversation.self)
+        try? modelContext.delete(model: ChatMessage.self)
+        try? modelContext.delete(model: AIAnalysis.self)
+        try? modelContext.delete(model: AISettings.self)
+        try? modelContext.delete(model: Family.self)
+        UserDefaults.standard.removeObject(forKey: "hasSeededDefaultData")
+        UserDefaults.standard.removeObject(forKey: "hasCompletedOnboarding")
+        UserDefaults.standard.removeObject(forKey: "user.name")
+    }
+    #endif
+}
+
+// MARK: - Goals List
+
+struct GoalsListView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Query private var goals: [Goal]
+
+    @State private var showGoalForm = false
+    @State private var goalToEdit: Goal? = nil
+
+    var body: some View {
+        List {
+            Section {
+                if goals.isEmpty {
+                    emptyGoals
+                } else {
+                    ForEach(goals) { goal in
+                        GoalRowView(goal: goal)
+                            .contentShape(Rectangle())
+                            .onTapGesture { goalToEdit = goal }
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    modelContext.delete(goal)
+                                } label: {
+                                    Label(t("common.delete"), systemImage: "trash")
+                                }
+                            }
+                    }
+                    .onDelete { offsets in
+                        let currentGoals = goals
+                        for index in offsets where currentGoals.indices.contains(index) {
+                            modelContext.delete(currentGoals[index])
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle(t("profile.goals"))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showGoalForm = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel(t("profile.newGoal"))
+            }
+        }
+        .sheet(isPresented: $showGoalForm) {
+            GoalFormView()
+        }
+        .sheet(item: $goalToEdit) { goal in
+            GoalFormView(goal: goal)
+        }
+    }
+
+    private var emptyGoals: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "target")
+                .font(.system(size: 32, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+            Text(t("profile.noGoals"))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Button {
+                showGoalForm = true
+            } label: {
+                Label(t("profile.newGoal"), systemImage: "plus.circle.fill")
+            }
+            .buttonStyle(.borderless)
+            .padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+    }
+}
+
+// MARK: - Goal Row
+
+struct GoalRowView: View {
+    let goal: Goal
+    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: goal.iconName)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 40, height: 40)
+                .background(Color.accentColor.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(goal.title)
+                    .font(.subheadline.weight(.medium))
+                if let cat = goal.category {
+                    Text(cat.name)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(t("goal.allExpenses"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            Text(goal.targetAmount.asCurrency(currencyCode))
+                .font(.subheadline.bold())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+}

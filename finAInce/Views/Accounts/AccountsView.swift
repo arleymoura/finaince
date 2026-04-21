@@ -3,11 +3,18 @@ import SwiftData
 
 struct AccountsView: View {
     @Environment(\.modelContext) private var modelContext
+    
     @Query private var accounts: [Account]
-
-    @State private var showAddAccount = false
+    
     @State private var accountToEdit: Account?
-
+    @State private var showDeleteConfirm = false
+    @State private var accountsToDelete: [Account] = []
+    
+    @Binding var selectedAccount: Account?
+    @Binding var showCreateAccount: Bool
+       
+    
+    
     var body: some View {
         NavigationStack {
             Group {
@@ -17,34 +24,101 @@ struct AccountsView: View {
                     accountList
                 }
             }
-            .navigationTitle("Contas")
+            .navigationTitle(t("account.title"))
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button { showAddAccount = true } label: {
+                    Button { showCreateAccount = true } label: {
                         Image(systemName: "plus.circle.fill")
                     }
                 }
             }
-            .sheet(isPresented: $showAddAccount) {
-                AccountFormView()
-            }
             .sheet(item: $accountToEdit) { account in
                 AccountFormView(account: account)
             }
+            // (DeleteAccountDialog overlay removed)
         }
     }
+    
+    struct DeleteAccountDialog: View {
+        let onConfirm: () -> Void
+        let onCancel: () -> Void
+
+        var body: some View {
+            VStack(spacing: 0) {
+
+                // HEADER
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 50, height: 50)
+                        .background(Color.red)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                    Text("Excluir conta")
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(.primary)
+                }
+                .padding(.top, 20)
+                .padding(.horizontal, 20)
+
+                // BODY
+                VStack(spacing: 10) {
+                    Text("Essa ação não pode ser desfeita.")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+
+                    Text("Todas as transações associadas a esta conta serão removidas permanentemente.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+
+                // ACTIONS
+                VStack(spacing: 10) {
+
+                    Button {
+                        onConfirm()
+                    } label: {
+                        Text("Excluir permanentemente")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(Color.red)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+
+                    Button {
+                        onCancel()
+                    } label: {
+                        Text("Cancelar")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                }
+                .padding(20)
+            }
+            .background(Color(.systemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .shadow(color: .black.opacity(0.25), radius: 30, y: 10)
+            .frame(maxWidth: 320)
+        }
+    }
+    
 
     // MARK: - Subviews
 
     private var accountList: some View {
         List {
             ForEach(accounts.sorted { $0.isDefault && !$1.isDefault }) { account in
-                AccountRowView(account: account) {
-                    setDefault(account)
-                }
-                .onTapGesture { accountToEdit = account }
+                AccountRowView(account: account)
+                    .onTapGesture { accountToEdit = account }
             }
-            .onDelete(perform: deleteAccounts)
         }
         .listStyle(.insetGrouped)
     }
@@ -54,25 +128,65 @@ struct AccountsView: View {
             Image(systemName: "creditcard.fill")
                 .font(.system(size: 48))
                 .foregroundStyle(.secondary)
-            Text("Nenhuma conta cadastrada")
+            Text(t("account.empty"))
                 .font(.headline)
                 .foregroundStyle(.secondary)
-            Button("Adicionar Conta") { showAddAccount = true }
+            Button(t("account.add")) { showCreateAccount = true }
                 .buttonStyle(.borderedProminent)
         }
     }
 
     // MARK: - Actions
 
-    private func setDefault(_ account: Account) {
-        accounts.forEach { $0.isDefault = false }
-        account.isDefault = true
-    }
-
     private func deleteAccounts(at indexSet: IndexSet) {
         let sorted = accounts.sorted { $0.isDefault && !$1.isDefault }
         for index in indexSet {
             modelContext.delete(sorted[index])
+        }
+    }
+
+    private func deleteAccountsConfirmed() {
+        for account in accountsToDelete {
+            modelContext.delete(account)
+        }
+        accountsToDelete = []
+    }
+}
+
+struct AccountsProfileSection: View {
+    @Query private var accounts: [Account]
+
+    @Binding var selectedAccount: Account?
+    @Binding var showCreateAccount: Bool
+
+    var body: some View {
+        Section {
+            if accounts.isEmpty {
+                Button {
+                    showCreateAccount = true
+                } label: {
+                    Label(t("account.add"), systemImage: "plus.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
+            } else {
+                ForEach(accounts.sorted { $0.isDefault && !$1.isDefault }) { account in
+                    AccountRowView(account: account)
+                        .contentShape(Rectangle())
+                        .onTapGesture { selectedAccount = account }
+                }
+
+                Button {
+                    showCreateAccount = true
+                } label: {
+                    Label(t("account.new"), systemImage: "plus.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+        } header: {
+            Text(t("account.title"))
+        }
+        .sheet(isPresented: $showCreateAccount) {
+            AccountFormView()
         }
     }
 }
@@ -81,7 +195,6 @@ struct AccountsView: View {
 
 struct AccountRowView: View {
     let account: Account
-    let onSetDefault: () -> Void
 
     var body: some View {
         HStack(spacing: 14) {
@@ -97,7 +210,7 @@ struct AccountRowView: View {
                     Text(account.name)
                         .font(.headline)
                     if account.isDefault {
-                        Text("Padrão")
+                        Text(t("common.default"))
                             .font(.caption2.bold())
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -113,25 +226,13 @@ struct AccountRowView: View {
                 if account.type == .creditCard,
                    let start = account.ccBillingStartDay,
                    let end = account.ccBillingEndDay {
-                    Text("Fatura: dia \(start) ao dia \(end)")
+                    Text(t("account.billingWindow", end, start))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
             Spacer()
-
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(account.balance.formatted(.currency(code: "BRL")))
-                    .font(.subheadline.bold())
-                    .foregroundStyle(account.balance >= 0 ? Color.primary : Color.red)
-
-                if !account.isDefault {
-                    Button("Tornar padrão", action: onSetDefault)
-                        .font(.caption)
-                        .foregroundStyle(Color.accentColor)
-                }
-            }
         }
         .padding(.vertical, 4)
     }
@@ -145,12 +246,14 @@ struct AccountFormView: View {
 
     var account: Account?
 
-    @State private var name = ""
+    @State private var name       = ""
     @State private var type: AccountType = .checking
-    @State private var icon = "building.columns.fill"
-    @State private var color = "#007AFF"
+    @State private var icon       = "building.columns.fill"
+    @State private var color      = "#007AFF"
     @State private var ccStartDay = 6
-    @State private var ccEndDay = 5
+    @State private var ccEndDay   = 5
+    @State private var isDefault  = false
+    @State private var showDeleteConfirm = false
 
     let availableColors = ["#007AFF", "#34C759", "#FF9500", "#FF3B30", "#AF52DE", "#FF2D55", "#5AC8FA", "#FFCC00"]
 
@@ -159,23 +262,32 @@ struct AccountFormView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Informações") {
-                    TextField("Nome da conta", text: $name)
-                    Picker("Tipo", selection: $type) {
+                Section(t("account.info")) {
+                    TextField(t("account.namePlaceholder"), text: $name)
+                    Picker(t("account.type"), selection: $type) {
                         ForEach(AccountType.allCases, id: \.self) {
                             Text($0.label).tag($0)
                         }
                     }
+                    Toggle(isOn: $isDefault) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(t("account.default"))
+                            Text(t("account.defaultDesc"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .tint(.accentColor)
                 }
 
                 if type == .creditCard {
-                    Section("Janela da Fatura") {
-                        Stepper("Início: dia \(ccStartDay)", value: $ccStartDay, in: 1...28)
-                        Stepper("Fim: dia \(ccEndDay)",      value: $ccEndDay,   in: 1...28)
+                    Section(t("account.billingWindowTitle")) {
+                        Stepper(t("account.billingStart", ccStartDay), value: $ccStartDay, in: 1...28)
+                        Stepper(t("account.billingEnd", ccEndDay), value: $ccEndDay, in: 1...28)
                     }
                 }
 
-                Section("Cor") {
+                Section(t("account.color")) {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 8), spacing: 8) {
                         ForEach(availableColors, id: \.self) { hex in
                             Circle()
@@ -189,38 +301,79 @@ struct AccountFormView: View {
                     }
                     .padding(.vertical, 4)
                 }
+
+                if isEditing {
+                    Section {
+                        Button(role: .destructive) {
+                            showDeleteConfirm = true
+                        } label: {
+                            HStack {
+                                Spacer()
+                                Text("Excluir conta")
+                                Spacer()
+                            }
+                        }
+                    }
+                }
             }
-            .navigationTitle(isEditing ? "Editar Conta" : "Nova Conta")
+            .navigationTitle(isEditing ? t("account.edit") : t("account.new"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancelar") { dismiss() }
+                    Button(t("common.cancel")) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Salvar") { save() }
+                    Button(t("common.save")) { save() }
                         .disabled(name.isEmpty)
                 }
             }
         }
         .onAppear { populateIfEditing() }
+        .overlay {
+            if showDeleteConfirm {
+                ZStack {
+                    Color.black.opacity(0.5)
+                        .ignoresSafeArea()
+                        .onTapGesture { showDeleteConfirm = false }
+
+                    AccountsView.DeleteAccountDialog(
+                        onConfirm: {
+                            deleteAccount()
+                            showDeleteConfirm = false
+                        },
+                        onCancel: {
+                            showDeleteConfirm = false
+                        }
+                    )
+                }
+            }
+        }
     }
 
     private func populateIfEditing() {
         guard let account else { return }
-        name = account.name
-        type = account.type
-        icon = account.icon
-        color = account.color
+        name       = account.name
+        type       = account.type
+        icon       = account.icon
+        color      = account.color
+        isDefault  = account.isDefault
         ccStartDay = account.ccBillingStartDay ?? 6
-        ccEndDay = account.ccBillingEndDay ?? 5
+        ccEndDay   = account.ccBillingEndDay   ?? 5
     }
 
     private func save() {
+        // Se esta conta vai ser padrão, desmarca todas as outras
+        if isDefault {
+            let all = (try? modelContext.fetch(FetchDescriptor<Account>())) ?? []
+            all.forEach { $0.isDefault = false }
+        }
+
         if let account {
-            account.name = name
-            account.type = type
-            account.icon = type.defaultIcon
-            account.color = color
+            account.name              = name
+            account.type              = type
+            account.icon              = type.defaultIcon
+            account.color             = color
+            account.isDefault         = isDefault
             account.ccBillingStartDay = type == .creditCard ? ccStartDay : nil
             account.ccBillingEndDay   = type == .creditCard ? ccEndDay   : nil
         } else {
@@ -229,6 +382,7 @@ struct AccountFormView: View {
                 type: type,
                 icon: type.defaultIcon,
                 color: color,
+                isDefault: isDefault,
                 ccBillingStartDay: type == .creditCard ? ccStartDay : nil,
                 ccBillingEndDay:   type == .creditCard ? ccEndDay   : nil
             )
@@ -236,4 +390,12 @@ struct AccountFormView: View {
         }
         dismiss()
     }
+
+    private func deleteAccount() {
+        guard let account else { return }
+        modelContext.delete(account)
+        dismiss()
+    }
+    
+    
 }

@@ -22,9 +22,9 @@ struct GoalProgressCard: View {
 
     private var status: (message: String, color: Color) {
         switch percentage {
-        case ..<50:    return ("Otimo ritmo! Continue assim", .green)
+        case ..<50:    return ("Ótimo ritmo! Continue assim", .green)
         case 50..<75:  return ("Indo bem, fique atento", .green)
-        case 75..<90:  return ("Atencao! Chegando no limite", .orange)
+        case 75..<90:  return ("Atenção! Chegando no limite", .orange)
         case 90..<100: return ("Quase no limite! Cuidado", .red)
         default:       return ("Meta ultrapassada", .red)
         }
@@ -69,7 +69,7 @@ struct GoalProgressCard: View {
                     Text("\(percentage)%")
                         .font(.subheadline.bold())
                         .foregroundStyle(status.color)
-                    Text("de \(goal.targetAmount.asCurrency(currencyCode))")
+                    Text(t("goal.ofAmount", goal.targetAmount.asCurrency(currencyCode)))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -101,11 +101,11 @@ struct GoalProgressCard: View {
 
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Pago: \(spent.asCurrency(currencyCode))")
+                    Text(t("goal.paidAmount", spent.asCurrency(currencyCode)))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     if forecast > spent {
-                        Text("Previsto: \(forecast.asCurrency(currencyCode))")
+                        Text(t("goal.expectedAmount", forecast.asCurrency(currencyCode)))
                             .font(.caption2)
                             .foregroundStyle(.orange)
                     }

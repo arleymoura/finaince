@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import UniformTypeIdentifiers
 
 struct SharedImportFile: Identifiable {
@@ -12,6 +13,12 @@ struct SharedImportFile: Identifiable {
     var pendingFile: SharedImportFile?
     var errorMessage: String?
 
+    /// Image shared from another app via the Share Extension.
+    /// `ChatView` reads this on appear and pre-populates `attachedImage`.
+    var pendingSharedImage: UIImage? = nil
+
+    private let appGroupID    = "group.Moura.finaince"
+    private let imageFileName = "shared_image.jpg"
     private let supportedExtensions = ["csv", "tsv", "txt", "xlsx", "xls"]
 
     private init() {}
@@ -22,16 +29,39 @@ struct SharedImportFile: Identifiable {
             return
         }
 
-        do {
-            let localURL = try copyIntoImportInbox(url)
-            pendingFile = SharedImportFile(url: localURL)
-        } catch {
-            errorMessage = "Não foi possível abrir o arquivo compartilhado."
-        }
+        pendingFile = SharedImportFile(url: url)
     }
 
     func clearPendingFile() {
         pendingFile = nil
+    }
+
+    // MARK: - Shared Image (from Share Extension via App Group)
+
+    /// Reads the image saved by the Share Extension from the App Group container.
+    /// Stores it in `pendingSharedImage` and deletes the file (one-shot delivery).
+    func handleSharedImage() {
+        guard
+            let containerURL = FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: appGroupID
+            )
+        else { return }
+
+        let src = containerURL.appendingPathComponent(imageFileName)
+        guard
+            FileManager.default.fileExists(atPath: src.path),
+            let data = try? Data(contentsOf: src),
+            let image = UIImage(data: data)
+        else { return }
+
+        // Consume the file so it isn't re-delivered on next cold launch
+        try? FileManager.default.removeItem(at: src)
+
+        pendingSharedImage = image
+    }
+
+    func clearPendingSharedImage() {
+        pendingSharedImage = nil
     }
 
     private func isSupportedFile(_ url: URL) -> Bool {
@@ -47,29 +77,7 @@ struct SharedImportFile: Identifiable {
             type.conforms(to: .plainText) ||
             type.conforms(to: .text) ||
             type.identifier == "org.openxmlformats.spreadsheetml.sheet" ||
-            type.identifier == "com.microsoft.excel.xls"
-    }
-
-    private func copyIntoImportInbox(_ sourceURL: URL) throws -> URL {
-        let didAccess = sourceURL.startAccessingSecurityScopedResource()
-        defer {
-            if didAccess {
-                sourceURL.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        let fileManager = FileManager.default
-        let inboxURL = fileManager.temporaryDirectory.appendingPathComponent("SharedImports", isDirectory: true)
-        try fileManager.createDirectory(at: inboxURL, withIntermediateDirectories: true)
-
-        let fileName = sourceURL.lastPathComponent.isEmpty ? "import.csv" : sourceURL.lastPathComponent
-        let destinationURL = inboxURL.appendingPathComponent("\(UUID().uuidString)-\(fileName)")
-
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            try fileManager.removeItem(at: destinationURL)
-        }
-
-        try fileManager.copyItem(at: sourceURL, to: destinationURL)
-        return destinationURL
+            type.identifier == "com.microsoft.excel.xls" ||
+            type.identifier == "com.microsoft.excel.xlsx"
     }
 }
