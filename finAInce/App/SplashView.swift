@@ -1,6 +1,12 @@
 import SwiftUI
 
+enum SplashMode: Equatable {
+    case brand
+    case syncing
+}
+
 struct SplashView: View {
+    let mode: SplashMode
 
     // MARK: - Logo animation state
 
@@ -88,6 +94,26 @@ struct SplashView: View {
                         .opacity(rightOpacity)
                         .offset(x: rightOffset)
                 }
+
+                if mode == .syncing {
+                    VStack(spacing: 10) {
+                        ProgressView()
+                            .tint(accent)
+                            .scaleEffect(1.05)
+
+                        Text(t("splash.syncTitle"))
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(Color(red: 0.10, green: 0.10, blue: 0.18))
+
+                        Text(t("splash.syncSubtitle"))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 280)
+                    }
+                    .padding(.top, 10)
+                    .transition(.opacity)
+                }
             }
         }
         .onAppear(perform: runAnimation)
@@ -128,5 +154,5 @@ struct SplashView: View {
 }
 
 #Preview {
-    SplashView()
+    SplashView(mode: .brand)
 }

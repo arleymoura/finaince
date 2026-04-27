@@ -64,8 +64,6 @@ struct FinancialAnalysisExporter {
             "{{PROMPT_INTRO}}": localizedPromptIntro(),
             "{{USER_GOAL}}": analysisGoalPrompt(for: analysisGoal),
             "{{RESPONSE_LANGUAGE}}": localizedResponseLanguage(),
-            "{{VALID_CATEGORIES}}": localizedValidCategories(transactions: transactions, goals: goals).joined(separator: "\n"),
-            "{{VALID_GOALS}}": localizedValidGoals().joined(separator: "\n"),
             "{{INITIAL_DIAGNOSIS}}": initialDiagnosisText,
             "{{USER_PROFILE}}": userProfile(adults: adults, children: children),
             "{{ACCOUNTS_BLOCK}}": accountsBlock(accounts),
@@ -203,7 +201,7 @@ struct FinancialAnalysisExporter {
             .map { goal in
                 let spent = spentAmount(for: goal, in: selectedMonthTransactions)
                 let progress = goal.targetAmount > 0 ? min(999, (spent / goal.targetAmount) * 100) : 0
-                let categoryName = validGoalName(goal.category?.name ?? goal.title)
+                let categoryName = validGoalName(goal.category?.displayName ?? goal.title)
                 return "- Category: \(categoryName): €\(amountValue(goal.targetAmount)) target — \(Int(progress.rounded()))% completed · finaince://goal/\(categoryName)"
             }
     }
@@ -253,23 +251,17 @@ struct FinancialAnalysisExporter {
     }
 
     private static func analysisGoalPrompt(for goal: String) -> String {
-        let normalized = goal
-            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-            .lowercased()
+        let cleanedGoal = goal
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
 
-        if normalized.contains("cortar") || normalized.contains("reduce") || normalized.contains("reducir") {
-            return "Identify unnecessary expenses and suggest ways to reduce spending."
+        guard !cleanedGoal.isEmpty else {
+            return "Provide practical recommendations based on the user's selected objective."
         }
 
-        if normalized.contains("proximo mes") || normalized.contains("next month") || normalized.contains("proximo mes") {
-            return "Help plan next month based on current financial patterns."
-        }
-
-        if normalized.contains("gastos") || normalized.contains("spending") || normalized.contains("gastos") {
-            return "Identify categories where spending is excessive."
-        }
-
-        return "Provide practical recommendations based on the user's selected objective."
+        return cleanedGoal
     }
 
     private static func initialDiagnosis(
@@ -403,86 +395,14 @@ struct FinancialAnalysisExporter {
 
     private static func transactionRootCategoryName(_ transaction: Transaction) -> String {
         if let category = transaction.category {
-            return (category.parent ?? category).name
+            return (category.parent ?? category).displayName
         }
 
         if let parent = transaction.subcategory?.parent {
-            return parent.name
+            return parent.displayName
         }
 
-        return "Outros"
-    }
-
-    private static func localizedValidCategories(transactions: [Transaction], goals: [Goal]) -> [String] {
-        let baseNames: [String]
-        switch LanguageManager.shared.effective {
-        case .ptBR, .system:
-            baseNames = [
-                "Moradia",
-                "Supermercado",
-                "Restaurantes",
-                "Transporte",
-                "Saúde",
-                "Viagens",
-                "Educação",
-                "Lazer",
-                "Shopping",
-                "Pets",
-                "Cuidados Pessoais",
-                "Financeiro",
-                "Outros"
-            ]
-        case .en:
-            baseNames = [
-                "Housing",
-                "Groceries",
-                "Restaurants",
-                "Transportation",
-                "Health",
-                "Travel",
-                "Education",
-                "Leisure",
-                "Shopping",
-                "Pets",
-                "Personal Care",
-                "Financial",
-                "Other"
-            ]
-        case .es:
-            baseNames = [
-                "Vivienda",
-                "Supermercado",
-                "Restaurantes",
-                "Transporte",
-                "Salud",
-                "Viajes",
-                "Educación",
-                "Ocio",
-                "Compras",
-                "Mascotas",
-                "Cuidado Personal",
-                "Financiero",
-                "Otros"
-            ]
-        }
-
-        let transactionNames = transactions.map { transactionRootCategoryName($0) }
-        let goalNames = goals.compactMap { goal -> String? in
-            if let category = goal.category {
-                return (category.parent ?? category).name
-            }
-
-            let title = goal.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            return title.isEmpty ? nil : title
-        }
-
-        let allNames = (baseNames + transactionNames + goalNames)
-            .reduce(into: [String]()) { result, name in
-                guard !result.contains(name) else { return }
-                result.append(name)
-            }
-
-        return allNames.map { "- \($0)" }
+        return t("insight.fallback.uncategorized")
     }
 
     private static func localizedResponseLanguage() -> String {
@@ -522,43 +442,8 @@ struct FinancialAnalysisExporter {
         }
     }
 
-    private static func localizedValidGoals() -> [String] {
-        switch LanguageManager.shared.effective {
-        case .ptBR, .system:
-            return [
-                "- Restaurantes",
-                "- Moradia",
-                "- Supermercado",
-                "- Transporte",
-                "- Saúde",
-                "- Educação",
-                "- Lazer"
-            ]
-        case .en:
-            return [
-                "- Restaurants",
-                "- Housing",
-                "- Groceries",
-                "- Transportation",
-                "- Health",
-                "- Education",
-                "- Leisure"
-            ]
-        case .es:
-            return [
-                "- Restaurantes",
-                "- Vivienda",
-                "- Supermercado",
-                "- Transporte",
-                "- Salud",
-                "- Educación",
-                "- Ocio"
-            ]
-        }
-    }
-
     private static func transactionDescription(_ transaction: Transaction) -> String {
-        transaction.placeName ?? transaction.subcategory?.name ?? transaction.category?.name ?? "Transaction"
+        transaction.placeName ?? transaction.subcategory?.displayName ?? transaction.category?.displayName ?? "Transaction"
     }
 
     private static func transactionAnalysisLine(
@@ -573,13 +458,13 @@ struct FinancialAnalysisExporter {
 
         if let category = transaction.category {
             let rootCategory = category.parent ?? category
-            parts.append("Category: \(rootCategory.name)")
+            parts.append("Category: \(rootCategory.displayName)")
         } else if let parent = transaction.subcategory?.parent {
-            parts.append("Category: \(parent.name)")
+            parts.append("Category: \(parent.displayName)")
         }
 
         if let subcategory = transaction.subcategory {
-            parts.append("Subcategory: \(subcategory.name)")
+            parts.append("Subcategory: \(subcategory.displayName)")
         }
 
         parts.append("Status: \(transaction.isPaid ? "paid" : "pending")")
@@ -613,6 +498,8 @@ struct FinancialAnalysisExporter {
             return ""
         case .monthly:
             return " · monthly recurring"
+        case .annual:
+            return " · annual recurring"
         case .installment:
             if let index = transaction.installmentIndex, let total = transaction.installmentTotal {
                 return " · installment \(index)/\(total)"
@@ -633,236 +520,186 @@ struct FinancialAnalysisExporter {
 
     private static let promptTemplate = """
 
-{{PROMPT_INTRO}}
+    {{PROMPT_INTRO}}
 
-Your goals:
+    ### ANALYSIS OBJECTIVES
 
-- Identify overspending patterns
-- Highlight unnecessary or high-impact expenses
-- Suggest concrete actions to reduce spending
-- Point out risks for the next month
-- Guide the user on what to adjust next
+    - Identify overspending patterns
+    - Highlight unnecessary or high-impact expenses
+    - Suggest concrete actions to reduce spending
+    - Point out risks for the next month
+    - Guide what to adjust next
 
-IMPORTANT:
+    -----
 
-- The user is analyzing this using their own AI tool
-- The response MUST be in {{RESPONSE_LANGUAGE}}
-- Be direct, but natural and human
-- Write like a real financial advisor talking to a person
+    ### USER OBJECTIVE
 
------
+    {{USER_GOAL}}
 
-### CONTEXT
+    Interpret this as the primary focus of the analysis.
 
-This data was generated by FinAInce, an app the user uses to manage their personal finances.
+    -----
 
-The app allows me to:
+    ### CONTEXT
+    This data was generated by FinAInce, a personal finance app used to track, plan and adjust spending.
+    Assume the user can take action inside the app (review categories, adjust goals, modify recurring expenses).
+    The output should be clear enough to be shared with family members.
+    -----
 
-- Track all expenses and categories
-- Monitor recurring payments and future commitments
-- Set my spending goals by category
-- Analyze monthly trends and comparisons
-- Import bank data (CSV, Excel)
-- Adjust financial planning over time
+    ### INITIAL DIAGNOSIS
 
-When suggesting actions, help the and assume that he can go back to the app to:
+    {{INITIAL_DIAGNOSIS}}
 
-- Review categories
-- Adjust goals
-- Modify recurring expenses
+    -----
 
------
+    === FINAINCE DATA START ===
 
-### VALID CATEGORIES (USE EXACT NAMES)
+    These are financial data generated by the FinAInce app.
 
-{{VALID_CATEGORIES}}
+    MY FAMILY PROFILE:
 
-IMPORTANT:
+    {{USER_PROFILE}}
 
-- Always use these exact names
-- Do NOT translate
-- Do NOT create new categories
+    MY ACCOUNTS:
 
------
+    {{ACCOUNTS_BLOCK}}
 
-### VALID GOALS (USE EXACT NAMES)
+    MY GOALS:
 
-{{VALID_GOALS}}
+    {{GOALS_BLOCK}}
 
------
-### MY GOAL
+    CURRENT MONTH:
+    Total spent: €{{CURRENT_MONTH_TOTAL}}
 
-{{USER_GOAL}}
+    Top categories:
 
------
+    {{CURRENT_MONTH_TOP_CATEGORIES}}
 
-### INITIAL DIAGNOSIS
+    All transactions:
 
-{{INITIAL_DIAGNOSIS}}
+    {{CURRENT_MONTH_ALL_TRANSACTIONS}}
 
------
+    PREVIOUS MONTH:
+    Total spent: €{{PREVIOUS_MONTH_TOTAL}}
 
-=== FINAINCE DATA START ===
+    Key differences:
 
-These are financial data generated by the FinAInce app.
+    - Current month is €{{MONTH_DIFFERENCE}} {{MONTH_DIRECTION}} than previous month
+    {{PREVIOUS_MONTH_DIFFS}}
 
-MY FAMILY PROFILE:
+    Top categories:
 
-{{USER_PROFILE}}
+    {{PREVIOUS_MONTH_TOP_CATEGORIES}}
 
-MY ACCOUNTS:
+    NEXT MONTH COMMITMENTS (ALREADY LOCKED EXPENSES):
 
-{{ACCOUNTS_BLOCK}}
+    Planned expenses: €{{NEXT_MONTH_TOTAL}}
 
-MY GOALS:
+    Pending commitments:
 
-{{GOALS_BLOCK}}
+    {{NEXT_MONTH_COMMITMENTS}}
 
-CURRENT MONTH:
-Total spent: €{{CURRENT_MONTH_TOTAL}}
+    === FINAINCE DATA END ===
 
-Top categories:
+    -----
 
-{{CURRENT_MONTH_TOP_CATEGORIES}}
+    ### RESPONSE STYLE
 
-All transactions:
+    - The response MUST be in {{RESPONSE_LANGUAGE}}
+    - Write in a natural, human tone
+    - Sound like a real financial advisor (not a system)
+    - Be direct and practical
+    - Avoid generic or vague language
+    - Focus on impact and clarity
+    - Briefly explain the reasoning before each recommendation when helpful
 
-{{CURRENT_MONTH_ALL_TRANSACTIONS}}
+    -----
 
-PREVIOUS MONTH:
-Total spent: €{{PREVIOUS_MONTH_TOTAL}}
+    ### OUTPUT STRUCTURE
 
-Key differences:
+    Follow this structure, keeping the tone fluid:
 
-- Current month is €{{MONTH_DIFFERENCE}} {{MONTH_DIRECTION}} than previous month
-{{PREVIOUS_MONTH_DIFFS}}
+    🔴 PRIORIDADE IMEDIATA  
+    💡 GANHO RÁPIDO  
+    📉 ECONOMIA POTENCIAL  
 
-Top categories:
+    -----
 
-{{PREVIOUS_MONTH_TOP_CATEGORIES}}
+    ### PRIORIDADE IMEDIATA
 
-NEXT MONTH COMMITMENTS (ALREADY LOCKED EXPENSES):
+    - Exactly ONE action
+    - Must be executable TODAY
+    - Must include a clear € amount impact
+    - Must be the highest-impact opportunity
 
-Planned expenses: €{{NEXT_MONTH_TOTAL}}
+    -----
 
-Pending commitments:
+    ### GANHO RÁPIDO
 
-{{NEXT_MONTH_COMMITMENTS}}
+    - One simple action with immediate effect
+    - Must include estimated savings
 
-=== FINAINCE DATA END ===
+    -----
 
------
+    ### ECONOMIA POTENCIAL
 
-### RESPONSE STYLE
+    - Combine all recommendations
+    - Show total potential:
 
-- The response MUST be in {{RESPONSE_LANGUAGE}}
-- Be direct, but natural and human
-- Write like a real financial advisor, not a system
-- Avoid robotic or templated language
-- Use a conversational tone when appropriate
-- Add short context before actions when helpful
-- Help-me to understand the impact of my decisions
-- Focus on 3–5 high-impact recommendations
-- Prioritize actions that reduce expenses
+    €X/month  
+    €X/year  
 
------
+    - Break down by source when possible
 
-### STRUCTURE (GUIDELINE)
+    -----
 
-Follow this structure, but keep the tone fluid and natural:
+    ### RECOMMENDATIONS
 
-🔴 PRIORIDADE IMEDIATA  
-💡 GANHO RÁPIDO  
-📉 ECONOMIA POTENCIAL  
+    - Provide 3–5 actions total
+    - Rank them by impact (highest savings first)
+    - Each action must:
+      - Use real data from the input
+      - Be specific and actionable
+      - Clearly state what to change
 
------
+    -----
 
-### PRIORIDADE IMEDIATA
+    ### RULES
 
-- Must be ONE single action
-- Must include a amount
-- Must be executable TODAY
+    - Do NOT give generic advice
+    - Do NOT invent data
+    - Prefer concrete numbers over assumptions
+    - Avoid repeating sentence structures
+    - Avoid extreme or unrealistic suggestions
 
------
+    -----
 
-### GANHO RÁPIDO
+    ### RETURN TO APP
 
-- One easy action with immediate impact
-- Must include estimated savings
+    Naturally reference FinAInce as the place where actions should be executed.
 
------
+    Examples (use sparingly and naturally):
+    - "Open FinAInce and review..."
+    - "Go back to the app and adjust..."
+    - "Inside FinAInce, you can..."
 
-### ECONOMIA POTENCIAL
+    -----
 
-- Combine ALL recommendations
-- Show:
+    ### FINAL NOTE
 
-€X/month  
-€X/year  
+    Encourage the user to apply the changes, keep tracking expenses, and run a new analysis.
 
-- Break down savings by source when possible
+    Reinforce that:
+    - The app is the control center
+    - The AI is the advisor
 
------
+    -----
 
-### RECOMMENDATIONS
+    ### TASK
 
-- Provide 3–5 actions
-- Each must:
-  - Use real data
-  - Be specific
-  - Suggest EXACTLY what to change
+    Perform the financial analysis using all data provided.
 
------
-
-### RULES
-
-- Avoid generic advice
-- Always give explicit actions
-- Prefer real data over generic suggestions
-- Avoid repeating sentence structures
-- Avoid extreme life decisions
-
-
-### RETURN TO APP
-
-When suggesting actions:
-
-- Encourage the user to go back to FinAInce
-- Make the app feel like the place where actions happen
-
-Examples:
-- "Open the FinAInce and take a look on..."
-- "Go back to the app and change..."
-- "On the FinAInce app, you can..."
-
-The goal is to bring the user back into the app naturally.
-
------
-### FINAL STEP
-
-Encourage the user to:
-
-- Go back to FinAInce
-- Apply the suggested changes
-- Keep tracking expenses
-- Run a new analysis after updates
-
-Explain clearly:
-
-FinAInce becomes more accurate as the user updates data and refines spending behavior.
-
-Make the user feel that:
-
-→ The app is the control center  
-→ The AI is the advisor  
-
-### TASK
-
-Now perform the analysis.
-
-Generate the full financial advisory response using the data above. So the user could share with his familiy
-
-Follow the RESPONSE STYLE, STRUCTURE, and RULES while keeping a natural and human tone.
+    Generate a clear, structured and actionable response that follows all instructions above and aligns with the USER OBJECTIVE.
 """
 
     private static let shortDateFormatter: DateFormatter = {

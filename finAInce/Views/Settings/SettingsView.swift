@@ -3,29 +3,30 @@ import SwiftData
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query private var aiSettingsList: [AISettings]
 
     @AppStorage("notif.pendingExpense") private var paymentAlert = false
     @AppStorage("notif.goalAlert")      private var goalAlert   = false
-    @AppStorage("app.currencyCode")     private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode")     private var currencyCode = CurrencyOption.defaultCode
     @AppStorage("app.colorScheme")      private var colorScheme  = "light"
-
     @State private var showSavedAlert = false
     private var lm: LanguageManager { LanguageManager.shared }
+    private var isRegularLayout: Bool { horizontalSizeClass == .regular }
+    private let regularContentMaxWidth: CGFloat = 1100
 
     var aiSettings: AISettings? { aiSettingsList.first }
 
     var body: some View {
         NavigationStack {
-            Form {
-                familySection
-                aiSection
-                languageSection
-                notificationsSection
-                preferencesSection
-                aboutSection
+            Group {
+                if isRegularLayout {
+                    regularSettingsView
+                } else {
+                    settingsForm
+                        .navigationTitle(t("settings.title"))
+                }
             }
-            .navigationTitle(t("settings.title"))
             .alert(t("settings.saved"), isPresented: $showSavedAlert) {
                 Button(t("common.ok")) { }
             }
@@ -33,12 +34,71 @@ struct SettingsView: View {
         }
     }
 
+    private var settingsForm: some View {
+        Form {
+            familySection
+            aiSection
+            languageSection
+            notificationsSection
+            preferencesSection
+            aboutSection
+        }
+    }
+
+    private var regularSettingsView: some View {
+        GeometryReader { proxy in
+            ZStack {
+                WorkspaceBackground(isRegularLayout: isRegularLayout)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    regularSettingsHeader(topInset: proxy.safeAreaInsets.top)
+                        .ignoresSafeArea(edges: .top)
+
+                    settingsForm
+                        .frame(maxWidth: regularContentMaxWidth)
+                        .frame(maxWidth: .infinity)
+                        .scrollContentBackground(.hidden)
+                        .background(Color.clear)
+                        .padding(.top, 12)
+                }
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private func regularSettingsHeader(topInset: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(t("settings.title"))
+                .font(.title2.weight(.bold))
+                .foregroundStyle(.white)
+
+            Text(t("settings.preferences"))
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.78))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 24)
+        .padding(.top, topInset + 18)
+        .padding(.bottom, 22)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color.accentColor.opacity(0.96),
+                    Color.accentColor.opacity(0.72)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+    }
+
     // MARK: - Sections
 
     private var familySection: some View {
         Section(t("settings.family")) {
             NavigationLink {
-                Text(t("settings.familyComing"))
+                FamilyMembersView()
             } label: {
                 Label(t("settings.familyMembers"), systemImage: "person.2.fill")
             }

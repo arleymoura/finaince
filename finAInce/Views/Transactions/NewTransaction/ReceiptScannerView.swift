@@ -14,7 +14,7 @@ struct ReceiptScannerView: View {
     private enum ScanPhase {
         case idle
         case processing
-        case result(amount: Double, storeName: String, categoryName: String, notes: String)
+        case result(amount: Double, storeName: String, categorySystemKey: String?, categoryName: String, notes: String)
         case error(String)
     }
 
@@ -77,9 +77,9 @@ struct ReceiptScannerView: View {
                         .background(Color(.secondarySystemBackground))
                         .clipShape(RoundedRectangle(cornerRadius: 14))
 
-                    case .result(let amount, let storeName, let categoryName, let notes):
+                    case .result(let amount, let storeName, let categorySystemKey, let categoryName, let notes):
                         resultCard(amount: amount, storeName: storeName,
-                                   categoryName: categoryName, notes: notes)
+                                   categorySystemKey: categorySystemKey, categoryName: categoryName, notes: notes)
 
                     case .error(let msg):
                         VStack(spacing: 12) {
@@ -162,9 +162,10 @@ struct ReceiptScannerView: View {
     }
 
     private func resultCard(amount: Double, storeName: String,
-                            categoryName: String, notes: String) -> some View {
-        // Resolve Category object (case-insensitive match)
+                            categorySystemKey: String?, categoryName: String, notes: String) -> some View {
         let resolvedCategory = categories.first {
+            $0.systemKey == categorySystemKey
+        } ?? categories.first {
             $0.name.localizedCaseInsensitiveCompare(categoryName) == .orderedSame
         } ?? categories.first {
             !categoryName.isEmpty && $0.name.localizedCaseInsensitiveContains(categoryName)
@@ -203,7 +204,7 @@ struct ReceiptScannerView: View {
                             Image(systemName: cat.icon)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text(cat.name)
+                            Text(cat.displayName)
                                 .font(.subheadline.bold())
                         }
                     }
@@ -286,21 +287,28 @@ struct ReceiptScannerView: View {
         }
 
         // 2. AI analysis — passa categorias para inferência
-        let catNames = categories
+        let categoryOptions = categories
             .filter { $0.parent == nil }
-            .map { $0.name }
+            .map {
+                AIService.ReceiptCategoryOption(
+                    categorySystemKey: $0.systemKey,
+                    categoryName: $0.name,
+                    categoryDisplayName: $0.displayName
+                )
+            }
 
         do {
             let result = try await AIService.analyzeReceipt(
                 ocrText: ocrText,
                 settings: settings,
-                categoryNames: catNames
+                categoryOptions: categoryOptions
             )
             phase = .result(
-                amount:       result.amount,
-                storeName:    result.storeName,
+                amount: result.amount,
+                storeName: result.storeName,
+                categorySystemKey: result.suggestedCategorySystemKey,
                 categoryName: result.suggestedCategoryName,
-                notes:        result.notes
+                notes: result.notes
             )
         } catch {
             phase = .error(error.localizedDescription)

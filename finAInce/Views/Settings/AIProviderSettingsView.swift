@@ -8,7 +8,9 @@ struct AIProviderSettingsView: View {
 
     @State private var editingProvider: AIProvider? = nil
 
-    private var settings: AISettings? { settingsList.first }
+    private var activeSettings: AISettings? {
+        settingsList.first(where: { $0.isConfigured })
+    }
 
     var body: some View {
         Form {
@@ -16,10 +18,11 @@ struct AIProviderSettingsView: View {
             activeSection
             otherProvidersSection
         }
+        .listSectionSpacing(.compact)
         .navigationTitle(t("settings.ai"))
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $editingProvider) { provider in
-            AIKeyEditSheet(provider: provider, settings: settings, modelContext: modelContext)
+            AIKeyEditSheet(provider: provider, settings: activeSettings, modelContext: modelContext)
         }
     }
 
@@ -27,27 +30,55 @@ struct AIProviderSettingsView: View {
 
     private var introSection: some View {
         Section {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(t("ai.setupTitle"))
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                Text(t("ai.setupDesc"))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            
+            VStack(spacing: 12) {
+                
+                ZStack {
+                    Circle()
+                        .fill(LinearGradient(
+                            colors: [.purple.opacity(0.12), .blue.opacity(0.12)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ))
+                        .frame(width: 100, height: 100)
+
+                    Image(systemName: "brain")
+                        .font(.system(size: 44))
+                        .foregroundStyle(LinearGradient(
+                            colors: [.purple, .blue],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ))
+                }
+                
+                VStack(spacing: 8) {
+                    Text(t("ai.setupTitle"))
+                        .font(.title2.bold())
+                        .multilineTextAlignment(.center)
+
+                    Text(t("ai.setupDesc"))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
-            .padding(.vertical, 4)
-        }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.top, 0)
+            .padding(.bottom, 4)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+        } header: { EmptyView() }
     }
 
     // MARK: - Provedor ativo
 
     private var activeSection: some View {
         Section {
-            if let settings {
-                // Linha do provedor
+            if let settings = activeSettings {
+                // ── Row 1: identidade do provedor ─────────────────────────
                 HStack(spacing: 12) {
                     providerIcon(settings.provider, size: 36)
+
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Text(settings.provider.label)
@@ -66,12 +97,24 @@ struct AIProviderSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+
                     Spacer()
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
+
+                    // Badge "ativo"
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption.weight(.semibold))
+                        Text(t("ai.active"))
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(Color.green.opacity(0.10))
+                    .clipShape(Capsule())
                 }
 
-                // Modelo
+                // ── Row 2: seleção de modelo (linha própria = sem truncar) ─
                 Picker(t("ai.model"), selection: Binding(
                     get: { settings.model },
                     set: { settings.model = $0 }
@@ -81,6 +124,7 @@ struct AIProviderSettingsView: View {
                     }
                 }
 
+                // ── Row 3: chave de API (se necessário) ───────────────────
                 if settings.provider.requiresAPIKey {
                     Button {
                         editingProvider = settings.provider
@@ -88,7 +132,7 @@ struct AIProviderSettingsView: View {
                         HStack {
                             Label(t("ai.apiKey"), systemImage: "key.fill")
                             Spacer()
-                            Text(t("common.edit"))
+                            Text(t("common.configure"))
                                 .foregroundStyle(.secondary)
                             Image(systemName: "chevron.right")
                                 .font(.caption)
@@ -98,6 +142,15 @@ struct AIProviderSettingsView: View {
                     .foregroundStyle(.primary)
                 }
 
+                // ── Row 4: desativar (botão explícito, sem swipe oculto) ──
+                Button(role: .destructive) {
+                    deactivateActiveProvider()
+                } label: {
+                    HStack {
+                        Label(t("common.deactivate"), systemImage: "xmark.circle")
+                        Spacer()
+                    }
+                }
             } else {
                 Text(t("ai.notConfigured"))
                     .foregroundStyle(.secondary)
@@ -119,7 +172,7 @@ struct AIProviderSettingsView: View {
 
     private var otherProvidersSection: some View {
         Section {
-            ForEach(settingsProviderDisplayOrder.filter { $0 != settings?.provider }) { provider in
+            ForEach(settingsProviderDisplayOrder.filter { $0 != activeSettings?.provider }) { provider in
                 otherProviderRow(provider)
             }
         } header: {
@@ -158,17 +211,17 @@ struct AIProviderSettingsView: View {
 
             if hasKey {
                 Button(t("common.use")) { activate(provider) }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .tint(Color.accentColor)
             }
 
-            Button(provider.requiresAPIKey ? (hasKey ? t("common.edit") : t("common.configure")) : t("common.details")) {
+            Button(provider.requiresAPIKey ? t("common.configure") : t("common.details")) {
                 editingProvider = provider
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .tint(Color.accentColor)
+            .tint(.gray)
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -179,16 +232,32 @@ struct AIProviderSettingsView: View {
     // MARK: - Helpers
 
     private func activate(_ provider: AIProvider) {
-        if let settings {
-            settings.provider = provider
-            settings.model = provider.defaultModel
-            settings.isConfigured = true
+        settingsList.forEach { $0.isConfigured = false }
+
+        if let existing = settingsList.first(where: { $0.provider == provider }) {
+            existing.provider = provider
+            if existing.model.isEmpty {
+                existing.model = provider.defaultModel
+            }
+            existing.isConfigured = true
+        } else if let activeSettings {
+            activeSettings.provider = provider
+            activeSettings.model = provider.defaultModel
+            activeSettings.isConfigured = true
         } else {
             let newSettings = AISettings(provider: provider)
             newSettings.model = provider.defaultModel
             newSettings.isConfigured = true
             modelContext.insert(newSettings)
         }
+
+        try? modelContext.save()
+    }
+
+    private func deactivateActiveProvider() {
+        guard let activeSettings else { return }
+        activeSettings.isConfigured = false
+        try? modelContext.save()
     }
 
     private func providerIcon(_ provider: AIProvider, size: CGFloat) -> some View {

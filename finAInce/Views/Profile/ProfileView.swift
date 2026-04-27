@@ -4,11 +4,19 @@ import PhotosUI
 
 struct ProfileView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query private var goals: [Goal]
     @Query private var aiSettingsList: [AISettings]
+    @Query private var accounts: [Account]
+    @Query private var categories: [Category]
+    @Query private var transactions: [Transaction]
+    @Query private var families: [Family]
+    @Query private var conversations: [ChatConversation]
+    @Query private var analyses: [AIAnalysis]
 
     @AppStorage("user.name")  private var userName  = "Meu Perfil"
     @AppStorage("user.photo") private var photoData: Data = Data()
+    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
 
     @State private var showNameEdit   = false
     @State private var photoPicker: PhotosPickerItem? = nil
@@ -17,12 +25,21 @@ struct ProfileView: View {
     @State private var deepLinkManager = DeepLinkManager.shared
     @State private var selectedAccount: Account?
     @State private var showCreateAccount = false
+    @State private var showCloudPaywall = false
+    @State private var entitlements = EntitlementManager.shared
+    @State private var profileCloudSync = ProfileCloudSyncStore.shared
+    private let regularContentMaxWidth: CGFloat = 1100
     
     var aiSettings: AISettings? { aiSettingsList.first }
+    private var isRegularLayout: Bool { horizontalSizeClass == .regular }
     
     var body: some View {
         NavigationStack {
             profileList
+                .scrollContentBackground(.hidden)
+                .background(WorkspaceBackground(isRegularLayout: isRegularLayout))
+                .frame(maxWidth: isRegularLayout ? regularContentMaxWidth : .infinity)
+                .frame(maxWidth: .infinity)
                 .safeAreaInset(edge: .top, spacing: 0) {
                     profileHeaderCard
                 }
@@ -34,12 +51,21 @@ struct ProfileView: View {
                             if let ui = UIImage(data: data) {
                                 profileImage = Image(uiImage: ui)
                             }
+                            publishProfileIfNeeded()
                         }
                     }
                 }
                 .onAppear {
+                    syncProfileFromCloudIfNeeded()
                     loadPhoto()
                     handleDeepLink(deepLinkManager.pendingDeepLink)
+                }
+                .onChange(of: userName) { _, _ in
+                    publishProfileIfNeeded()
+                }
+                .onChange(of: photoData) { _, _ in
+                    loadPhoto()
+                    publishProfileIfNeeded()
                 }
                 .onChange(of: deepLinkManager.pendingDeepLink) { _, deepLink in
                     handleDeepLink(deepLink)
@@ -54,6 +80,9 @@ struct ProfileView: View {
                 .sheet(isPresented: $showCreateAccount) {
                     AccountFormView()
                         .presentationDetents([.medium, .large])
+                }
+                .sheet(isPresented: $showCloudPaywall) {
+                    FinAInceCloudView()
                 }
         }
     }
@@ -78,6 +107,20 @@ struct ProfileView: View {
 
     private var profileList: some View {
         List {
+            // ── finAInce Cloud banner ─────────────────────────────────────
+            Section {
+                Button {
+                    showCloudPaywall = true
+                } label: {
+                    FinAInceCloudBanner(state: entitlements.purchaseState)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+
             Section {
                 NavigationLink {
                     GoalsListView()
@@ -109,6 +152,29 @@ struct ProfileView: View {
                 selectedAccount: $selectedAccount,
                 showCreateAccount: $showCreateAccount
             )
+
+            Section {
+                NavigationLink {
+                    ProjectsListView()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "folder.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.orange)
+                            .frame(width: 32, height: 32)
+                            .background(Color.orange.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                        Text(t("profile.projects"))
+                            .font(.subheadline)
+                            .foregroundStyle(.primary)
+
+                        Spacer()
+                    }
+                }
+            } header: {
+                Text(t("profile.projects"))
+            }
             
             Section {
                 NavigationLink(destination: AIProviderSettingsView()) {
@@ -162,11 +228,20 @@ struct ProfileView: View {
                 } label: {
                     Label(t("profile.settings"), systemImage: "gearshape.fill")
                 }
+                NavigationLink {
+                    HelpView()
+                } label: {
+                    Label(t("profile.help"), systemImage: "questionmark.circle.fill")
+                }
             }
 
             // Debug tools — visível apenas em builds de desenvolvimento
             #if DEBUG
             Section {
+                debugCloudDiagnostics
+
+                Divider()
+
                 Button {
                     SampleData.seed(in: modelContext)
                 } label: {
@@ -270,15 +345,19 @@ struct ProfileView: View {
         .padding(.top, 16)
         .padding(.bottom, 20)
         .background {
-            // Rounded bottom card shape
-            UnevenRoundedRectangle(
-                cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24)
-            )
-            .fill(Color(.systemBackground))
-            // Extend white fill behind status bar (above the card's own frame)
-            .ignoresSafeArea(edges: .top)
+            Group {
+                if isRegularLayout {
+                    WorkspaceBackground(isRegularLayout: true)
+                } else {
+                    UnevenRoundedRectangle(
+                        cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24)
+                    )
+                    .fill(Color(.systemBackground))
+                    .ignoresSafeArea(edges: .top)
+                }
+            }
         }
-        .shadow(color: Color.black.opacity(0.06), radius: 10, x: 0, y: 4)
+        .shadow(color: isRegularLayout ? .clear : Color.black.opacity(0.06), radius: 10, x: 0, y: 4)
     }
 
     private var emptyGoals: some View {
@@ -306,7 +385,134 @@ struct ProfileView: View {
         profileImage = Image(uiImage: ui)
     }
 
+    private func syncProfileFromCloudIfNeeded() {
+        let synced = profileCloudSync.syncFromCloud(
+            localName: userName,
+            localPhotoData: photoData,
+            isConfiguredDevice: hasCompletedOnboarding
+        )
+
+        if synced.name != userName {
+            userName = synced.name
+        }
+
+        if synced.photoData != photoData {
+            photoData = synced.photoData
+        }
+    }
+
+    private func publishProfileIfNeeded() {
+        profileCloudSync.publish(
+            name: userName,
+            photoData: photoData,
+            isConfiguredDevice: hasCompletedOnboarding
+        )
+    }
+
     #if DEBUG
+    private var debugCloudDiagnostics: some View {
+        let status = FamilyFinanceApp.debugCloudStatus()
+        let launchLogs = DebugLaunchLog.entries()
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: status.cloudEntitlementEnabled ? "checkmark.icloud.fill" : "icloud.slash")
+                    .foregroundStyle(status.cloudEntitlementEnabled ? .green : .secondary)
+                Text("Cloud Debug")
+                    .font(.subheadline.bold())
+                Spacer()
+                Text(status.cloudEntitlementEnabled ? "Enabled" : "Disabled")
+                    .font(.caption.bold())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background((status.cloudEntitlementEnabled ? Color.green : Color.secondary).opacity(0.12))
+                    .foregroundStyle(status.cloudEntitlementEnabled ? .green : .secondary)
+                    .clipShape(Capsule())
+            }
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                debugStatCard(title: "Store", value: status.cloudEntitlementEnabled ? "Cloud" : "Local")
+                debugStatCard(title: "Transactions", value: "\(transactions.count)")
+                debugStatCard(title: "Accounts", value: "\(accounts.count)")
+                debugStatCard(title: "Categories", value: "\(categories.count)")
+                debugStatCard(title: "Families", value: "\(families.count)")
+                debugStatCard(title: "Goals", value: "\(goals.count)")
+                debugStatCard(title: "Chats", value: "\(conversations.count)")
+                debugStatCard(title: "Analyses", value: "\(analyses.count)")
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                debugFlagRow(label: "Prepared cloud migration", value: status.preparedCloudMigration)
+                debugFlagRow(label: "Needs cloud import", value: status.needsCloudImport)
+                debugFlagRow(label: "Needs deduplication", value: status.needsCloudDeduplication)
+                debugFlagRow(label: "Local store exists", value: status.localStoreExists)
+                debugFlagRow(label: "Cloud store exists", value: status.cloudStoreExists)
+            }
+
+            Divider()
+
+            HStack {
+                Text("Launch Logs")
+                    .font(.subheadline.bold())
+                Spacer()
+                Button("Clear") {
+                    DebugLaunchLog.clear()
+                }
+                .font(.caption.bold())
+            }
+
+            if launchLogs.isEmpty {
+                Text("No persisted logs yet.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(launchLogs.enumerated()), id: \.offset) { _, entry in
+                            Text(entry)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.primary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                .frame(minHeight: 120, maxHeight: 240)
+                .padding(10)
+                .background(Color(.tertiarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func debugStatCard(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(.primary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color(.tertiarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func debugFlagRow(label: String, value: Bool) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: value ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .foregroundStyle(value ? .green : .secondary)
+            Text(label)
+                .font(.footnote)
+            Spacer()
+            Text(value ? "YES" : "NO")
+                .font(.caption.bold())
+                .foregroundStyle(value ? .green : .secondary)
+        }
+    }
+
     private func resetAllData() {
         try? modelContext.delete(model: Transaction.self)
         try? modelContext.delete(model: Account.self)
@@ -320,6 +526,7 @@ struct ProfileView: View {
         UserDefaults.standard.removeObject(forKey: "hasSeededDefaultData")
         UserDefaults.standard.removeObject(forKey: "hasCompletedOnboarding")
         UserDefaults.standard.removeObject(forKey: "user.name")
+        FamilyFinanceApp.debugResetPersistentStores()
     }
     #endif
 }
@@ -406,7 +613,7 @@ struct GoalsListView: View {
 
 struct GoalRowView: View {
     let goal: Goal
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
 
     var body: some View {
         HStack(spacing: 12) {
@@ -421,7 +628,7 @@ struct GoalRowView: View {
                 Text(goal.title)
                     .font(.subheadline.weight(.medium))
                 if let cat = goal.category {
-                    Text(cat.name)
+                    Text(cat.displayName)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {

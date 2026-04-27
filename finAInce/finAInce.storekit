@@ -1,0 +1,67 @@
+{
+  "appPolicies" : {
+    "eula" : "",
+    "policies" : [
+      {
+        "locale" : "en_US",
+        "policyText" : "",
+        "policyURL" : ""
+      }
+    ]
+  },
+  "identifier" : "A6977624",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "3.99",
+      "familyShareable" : false,
+      "internalID" : "6763499897",
+      "localizations" : [
+        {
+          "description" : "Sincronize dados e faça backup seguro no seu iCloud",
+          "displayName" : "FinAInce Cloud",
+          "locale" : "pt_BR"
+        },
+        {
+          "description" : "Sincronice datos y mantenga copia segura en tu iCloud",
+          "displayName" : "FinAInce Cloud",
+          "locale" : "es_ES"
+        },
+        {
+          "description" : "Sync data and keep a secure backup in your iCloud",
+          "displayName" : "FinAInce Cloud",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "finaince.cloud.lifetime",
+      "referenceName" : "FinAInce Cloud",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_applicationInternalID" : "6762548226",
+    "_askToBuyEnabled" : false,
+    "_billingGracePeriodEnabled" : false,
+    "_billingIssuesEnabled" : false,
+    "_developerTeamID" : "XS8XF89CQ5",
+    "_disableDialogs" : false,
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 798727944.539096,
+    "_locale" : "es_ES",
+    "_renewalBillingIssuesEnabled" : false,
+    "_storefront" : "ESP",
+    "_storeKitErrors" : [
+
+    ],
+    "_timeRate" : 0
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 5,
+    "minor" : 0
+  }
+}

@@ -8,7 +8,7 @@ struct GoalFormView: View {
 
     var goal: Goal? // nil = nova meta
 
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
 
     @State private var title       = ""
     @State private var targetText  = ""
@@ -106,7 +106,7 @@ struct GoalFormView: View {
                         Picker(t("goal.category"), selection: $selectedCategory) {
                             Text(t("goal.selectCategory")).tag(Category?.none)
                             ForEach(rootCategories) { cat in
-                                Label(cat.name, systemImage: cat.icon).tag(Category?.some(cat))
+                                Label(cat.displayName, systemImage: cat.icon).tag(Category?.some(cat))
                             }
                         }
                     }

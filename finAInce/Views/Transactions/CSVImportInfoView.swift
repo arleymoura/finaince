@@ -73,6 +73,9 @@ struct CSVImportInfoView: View {
                 UTType("org.openxmlformats.spreadsheetml.sheet"),
                 // XLS legado (.xls) — detectado e bloqueado com mensagem clara
                 UTType("com.microsoft.excel.xls"),
+                // OFX — extrato bancário Open Financial Exchange
+                UTType(filenameExtension: "ofx"),
+                UTType("com.intuit.ofx"),
             ] as [UTType?]).compactMap { $0 },
             allowsMultipleSelection: false
         ) { result in
@@ -97,7 +100,7 @@ struct CSVImportInfoView: View {
                 if let summary = lastImportedSummary,
                    let storedURL = ImportStatementStore.currentFileURL() {
                     VStack(alignment: .center, spacing: 14) {
-                        Text("Último arquivo enviado")
+                        Text(t("import.lastUploaded"))
                             .font(.caption.bold())
                             .foregroundStyle(.secondary)
                             .textCase(.uppercase)
@@ -107,6 +110,7 @@ struct CSVImportInfoView: View {
                     importAnotherButton
                 } else {
                     formatsSection
+                    bankHintSection
                     shareSection
                     ctaButton
                 }
@@ -149,16 +153,40 @@ struct CSVImportInfoView: View {
     // MARK: - Accepted formats
 
     private var formatsSection: some View {
-        VStack(alignment: .center, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(t("import.formatsTitle"))
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
                 .textCase(.uppercase)
+                .frame(maxWidth: .infinity, alignment: .center)
 
-            HStack(spacing:12) {
-                FormatBadge(label: "CSV",   ext: ".csv",   icon: "doc.text.fill",   color: .green)
-                FormatBadge(label: "Excel", ext: ".xlsx",  icon: "tablecells.fill",  color: .blue)
+            let formats: [(ext: String, icon: String, color: Color)] = [
+                (".CSV",  "doc.text.fill",             .green),
+                (".XLSX", "tablecells.fill",           .blue),
+                (".XLS",  "tablecells.badge.ellipsis", .orange),
+                (".OFX",  "building.columns.fill",     .purple),
+            ]
+
+            HStack(spacing: 8) {
+                ForEach(formats, id: \.ext) { f in
+                    HStack(spacing: 6) {
+                        Image(systemName: f.icon)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(f.color)
+                            .frame(width: 14)
+
+                        Text(f.ext)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .monospaced()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(.secondarySystemBackground), in: Capsule())
+                }
             }
+
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -229,7 +257,7 @@ struct CSVImportInfoView: View {
 
     private var importAnotherButton: some View {
         Button { showPicker = true } label: {
-            Label("Importar outro extrato", systemImage: "arrow.clockwise.circle")
+            Label(t("import.importAnother"), systemImage: "arrow.clockwise.circle")
                 .font(.body.bold())
                 .frame(maxWidth: .infinity)
         }
@@ -258,15 +286,15 @@ struct CSVImportInfoView: View {
             }
 
             HStack(spacing: 10) {
-                importStatusPill(title: "Novos", value: summary.newCount, color: .blue)
-                importStatusPill(title: "Conciliados", value: summary.reconciledCount, color: .green)
-                importStatusPill(title: "Total", value: summary.totalCount, color: .secondary)
+                importStatusPill(title: t("import.status.new"), value: summary.newCount, color: .blue)
+                importStatusPill(title: t("import.status.reconciled"), value: summary.reconciledCount, color: .green)
+                importStatusPill(title: t("import.status.total"), value: summary.totalCount, color: .secondary)
             }
 
             Button {
                 pickedURL = IdentifiableURL(url: storedURL, accountId: summary.accountId)
             } label: {
-                Label("Continuar importação", systemImage: "arrow.right.circle")
+                Label(t("import.continue"), systemImage: "arrow.right.circle")
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity)
             }
@@ -276,7 +304,7 @@ struct CSVImportInfoView: View {
             Button(role: .destructive) {
                 deleteSavedStatement()
             } label: {
-                Label("Excluir extrato", systemImage: "trash")
+                Label(t("import.deleteStatement"), systemImage: "trash")
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity)
             }
@@ -351,36 +379,5 @@ private struct ShareStep: View {
                     .foregroundStyle(.secondary)
             }
         }
-    }
-}
-
-// MARK: - Format Badge
-
-private struct FormatBadge: View {
-    let label: String
-    let ext:   String
-    let icon:  String
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(color)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label)
-                    .font(.subheadline.bold())
-                Text(ext)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospaced()
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(color.opacity(0.2), lineWidth: 1))
     }
 }

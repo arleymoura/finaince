@@ -1,7 +1,6 @@
 import Foundation
 import SwiftData
 
-
 enum AccountType: String, Codable, CaseIterable {
     case checking = "checking"
     case creditCard = "credit_card"
@@ -23,21 +22,24 @@ enum AccountType: String, Codable, CaseIterable {
 
 @Model
 final class Account {
-    @Attribute(.unique) var id: UUID
-    var name: String
-    var type: AccountType
-    var balance: Double
-    var icon: String
-    var color: String
-    var isDefault: Bool
+    var id: UUID = UUID()
+    var name: String = ""
+    var type: AccountType = AccountType.checking
+    var balance: Double = 0
+    var icon: String = ""
+    var color: String = ""
+    var isDefault: Bool = false
     var ccBillingStartDay: Int?
     var ccBillingEndDay: Int?
-    var createdAt: Date
+    var createdAt: Date = Date()
 
     var family: Family?
 
     @Relationship(deleteRule: .cascade, inverse: \Transaction.account)
-    var transactions: [Transaction] = []
+    var transactions: [Transaction]?
+
+    @Relationship(deleteRule: .nullify, inverse: \Transaction.destinationAccount)
+    var outgoingTransfers: [Transaction]?
 
     init(
         name: String,

@@ -7,6 +7,11 @@ enum CurrencyOption: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    nonisolated static var defaultCode: String {
+        let preferred = Locale.current.currency?.identifier ?? "USD"
+        return CurrencyOption(rawValue: preferred)?.rawValue ?? "USD"
+    }
+
     var label: String {
         switch self {
         case .brl: return t("currency.brl")
@@ -36,8 +41,8 @@ enum CurrencyOption: String, CaseIterable, Identifiable {
 extension Double {
     /// Formats the value as currency with the symbol on the left.
     /// - Parameter code: ISO 4217 code, e.g. "BRL", "USD", "EUR". Defaults to UserDefaults value.
-    func asCurrency(_ code: String = UserDefaults.standard.string(forKey: "app.currencyCode") ?? "BRL") -> String {
-        let option = CurrencyOption(rawValue: code) ?? .brl
+    func asCurrency(_ code: String = UserDefaults.standard.string(forKey: "app.currencyCode") ?? CurrencyOption.defaultCode) -> String {
+        let option = CurrencyOption(rawValue: code) ?? CurrencyOption(rawValue: CurrencyOption.defaultCode) ?? .usd
         let formatter = NumberFormatter()
         formatter.numberStyle = .currency
         formatter.currencyCode = option.rawValue

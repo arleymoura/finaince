@@ -51,5 +51,9 @@
 	<string>Usamos sua localizacao para sugerir estabelecimentos proximos ao registrar uma transacao.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Usamos sua biblioteca de fotos para escolher recibos, imagens de perfil e anexos para suas transacoes e conversas.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 </dict>
 </plist>

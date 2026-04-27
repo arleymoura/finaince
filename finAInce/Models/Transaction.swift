@@ -30,12 +30,14 @@ enum TransactionType: String, Codable, CaseIterable {
 enum RecurrenceType: String, Codable, CaseIterable {
     case none        = "none"
     case monthly     = "monthly"
+    case annual      = "annual"
     case installment = "installment"
 
     var label: String {
         switch self {
         case .none:        return t("recurrence.none")
         case .monthly:     return t("recurrence.monthly")
+        case .annual:      return t("recurrence.annual")
         case .installment: return t("recurrence.installment")
         }
     }
@@ -43,30 +45,33 @@ enum RecurrenceType: String, Codable, CaseIterable {
 
 @Model
 final class Transaction {
-    @Attribute(.unique) var id: UUID
-    var type: TransactionType
-    var amount: Double
-    var date: Date
+    var id: UUID = UUID()
+    var type: TransactionType = TransactionType.expense
+    var amount: Double = 0
+    var date: Date = Date()
     var placeName: String?
     var placeGoogleId: String?
     var notes: String?
-    var recurrenceType: RecurrenceType
+    var recurrenceType: RecurrenceType = RecurrenceType.none
     var installmentIndex: Int?
     var installmentTotal: Int?
     var installmentGroupId: UUID?
-    var createdAt: Date
-
-    var isPaid: Bool
+    var createdAt: Date = Date()
+    var isPaid: Bool = true
     /// Hash used to detect re-imports of the same bank statement row.
     /// Format: "yyyy-MM-dd|description|amount" — set automatically on import.
     var importHash: String?
+    /// UUID of the CostCenter (project) this transaction belongs to. Optional.
+    var costCenterId: UUID?
+
     var family: Family?
     var account: Account?
     var category: Category?
     var subcategory: Category?
     var destinationAccount: Account?
+
     @Relationship(deleteRule: .cascade, inverse: \ReceiptAttachment.transaction)
-    var receiptAttachments: [ReceiptAttachment] = []
+    var receiptAttachments: [ReceiptAttachment]?
 
     init(
         type: TransactionType,
@@ -163,6 +168,43 @@ extension Transaction {
                 recurrenceType: .monthly,
                 installmentIndex: index,
                 installmentTotal: months,
+                installmentGroupId: groupId,
+                isPaid: false
+            )
+            recurring.family  = base.family
+            recurring.account = base.account
+            recurring.category    = base.category
+            recurring.subcategory = base.subcategory
+            modelContext.insert(recurring)
+        }
+    }
+
+    /// Gera 20 anos de recorrência anual a partir da transação base.
+    static func generateAnnualRecurrences(
+        from base: Transaction,
+        years: Int = 20,
+        in modelContext: ModelContext
+    ) {
+        guard years > 1 else { return }
+        let groupId = UUID()
+        base.installmentIndex = 1
+        base.installmentTotal = years
+        base.installmentGroupId = groupId
+
+        for index in 2...years {
+            var comps = DateComponents()
+            comps.year = index - 1
+            let futureDate = Calendar.current.date(byAdding: comps, to: base.date) ?? base.date
+
+            let recurring = Transaction(
+                type: base.type,
+                amount: base.amount,
+                date: futureDate,
+                placeName: base.placeName,
+                notes: base.notes,
+                recurrenceType: .annual,
+                installmentIndex: index,
+                installmentTotal: years,
                 installmentGroupId: groupId,
                 isPaid: false
             )

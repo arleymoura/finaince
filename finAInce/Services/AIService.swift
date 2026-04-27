@@ -5,6 +5,7 @@ import Foundation
 struct TransactionDraft: Sendable {
     let amount:       Double
     let typeRaw:      String   // "expense"
+    let categorySystemKey: String?
     let categoryName: String
     let placeName:    String
     let notes:        String
@@ -55,7 +56,8 @@ struct AIService {
         transactions: [Transaction],
         goals: [Goal] = [],
         accounts: [Account] = [],
-        currencyCode: String = "BRL",
+        categories: [Category] = [],
+        currencyCode: String = CurrencyOption.defaultCode,
         imageData: Data? = nil
     ) async throws -> AIServiceResult {
 
@@ -72,6 +74,7 @@ struct AIService {
                 transactions:       transactions.map { $0.asSnapshot() },
                 goals:              goals.map { $0.asSnapshot(monthExpenses: thisMonthExpenses) },
                 accounts:           accounts.map { $0.asSnapshot() },
+                categories:         FinanceContext.registeredExpenseCategories(from: categories),
                 currencyCode:       currencyCode,
                 appLanguageCode:    LanguageManager.shared.effective.rawValue,
                 localeIdentifier:   Locale.current.identifier,
@@ -177,6 +180,9 @@ struct AIService {
         let year  = cal.component(.year,  from: now)
         let month = cal.component(.month, from: now)
         let appLanguage = LanguageManager.shared.effective
+        let currentMonthName = now.formatted(.dateTime.month(.wide))
+        let currentYear = cal.component(.year, from: now)
+        let currentMonthNumber = cal.component(.month, from: now)
 
         let thisMonth = transactions.filter {
             cal.component(.year,  from: $0.date) == year &&
@@ -189,7 +195,7 @@ struct AIService {
         // Agrupa por categoria
         var byCategory: [String: Double] = [:]
         for tx in thisMonth {
-            let cat = tx.category?.name ?? "Uncategorized"
+            let cat = tx.category?.displayName ?? "Uncategorized"
             byCategory[cat, default: 0] += tx.amount
         }
         let fmt = NumberFormatter()
@@ -204,7 +210,7 @@ struct AIService {
 
         let txLines = thisMonth.prefix(30).map { tx in
             let place = tx.placeName ?? "unknown merchant"
-            let cat   = tx.category?.name ?? "uncategorized"
+            let cat   = tx.category?.displayName ?? "uncategorized"
             return "• \(brl(tx.amount)) — \(place) (\(cat))"
         }.joined(separator: "\n")
 
@@ -219,6 +225,13 @@ struct AIService {
         - Interpret the data instead of repeating raw numbers without context.
         - When relevant, suggest where the user may be able to save money.
 
+        ## Time context (critical)
+        - Today's date is: \(now.formatted(.dateTime.day().month(.wide).year()))
+        - Current month: \(currentMonthName) \(currentYear) (month number: \(currentMonthNumber))
+        - When the user says "this month", ALWAYS refer to \(currentMonthName) \(currentYear)
+        - When the user says "last month", refer to the previous calendar month relative to this date
+        - NEVER assume January or any fixed month unless explicitly stated by the user
+
         ## Critical output rules
         - Never reveal chain-of-thought, internal reasoning, or analysis steps.
         - Never mention functions, tools, queries, or that you are looking up data.
@@ -229,6 +242,9 @@ struct AIService {
 
         ## User financial data
         Today: \(now.formatted(.dateTime.day().month(.wide).year()))
+        Current month (authoritative): \(currentMonthName) \(currentYear)
+        All transactions below already belong to this current month.
+        Do not reinterpret or shift the time period.
 
         Current month expenses — Total: \(brl(total))
 
@@ -437,56 +453,432 @@ struct AIService {
     // MARK: - Receipt Analysis
 
     struct ReceiptResult {
+        let isReceipt: Bool       // true only when the text is clearly a purchase receipt/invoice
         let amount: Double
         let storeName: String
+        let suggestedCategorySystemKey: String?
         let suggestedCategoryName: String
         let notes: String
         let date: Date?
     }
 
-    struct CategorySuggestionOption: Sendable {
+    struct ReceiptCategoryOption: Sendable {
+        let categorySystemKey: String?
         let categoryName: String
+        let categoryDisplayName: String
+    }
+
+    struct CategorySuggestionOption: Sendable {
+        let categorySystemKey: String?
+        let categoryName: String
+        let categoryDisplayName: String
+        let subcategorySystemKey: String?
         let subcategoryName: String?
+        let subcategoryDisplayName: String?
     }
 
     struct CategorySuggestionResult: Sendable {
+        let categorySystemKey: String?
         let categoryName: String
+        let subcategorySystemKey: String?
         let subcategoryName: String?
         /// Nome limpo do estabelecimento extraído pela IA da descrição bruta do extrato.
         /// Pode ser nil se a IA não conseguir identificar ou se a entrada já for um nome limpo.
         let resolvedMerchantName: String?
     }
 
+    // Keep this list global and structural. Avoid country-specific banking vocabulary here,
+    // otherwise the local heuristic becomes brittle outside a small set of markets.
+    // Future expansion point: add only broadly recurring payment/channel words that appear
+    // across markets and providers. Avoid city names, country codes, or bank-specific jargon.
+    private static let merchantNoiseTerms: Set<String> = [
+        "payment", "purchase", "debit", "credit",
+        "online", "pos", "mobile", "card", "transfer",
+        "tar", "trx", "txn", "ref", "visa", "mastercard"
+    ]
+
+    private static let fallbackPaymentPrefixes: [String] = [
+        // English
+        "card purchase", "debit purchase", "online purchase", "payment", "purchase", "transfer",
+        // Portuguese
+        "compra no cartao", "compra no cartão", "compra cartao", "compra cartão", "pagamento", "compra", "transferencia", "transferência", "pix",
+        // Spanish
+        "compra con tarjeta", "pago movil", "pago móvil", "pago", "compra", "transferencia"
+    ]
+
+    private static let fallbackLeadingConnectors: Set<String> = [
+        "at", "in", "on", "en", "de"
+    ]
+
+    private static let merchantCorporateSuffixes: Set<String> = [
+        "bv", "b.v", "eu", "sarl", "llc", "ltd", "inc", "gmbh", "sa", "s.a", "sl", "s.l", "plc"
+    ]
+
+    static func prepareMerchantTextForAI(_ rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        let uppercased = trimmed.uppercased()
+        let separators = CharacterSet(charactersIn: ",;|/\\()[]{}")
+        let rawSegments = uppercased.components(separatedBy: separators)
+
+        var cleanedSegments: [String] = []
+        for segment in rawSegments {
+            let words = segment
+                .components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .filter { word in
+                    let lowered = word.lowercased()
+                    if merchantNoiseTerms.contains(lowered) { return false }
+                    if lowered.rangeOfCharacter(from: .decimalDigits) != nil { return false }
+                    if lowered.count <= 1 { return false }
+                    return true
+                }
+
+            let rebuilt = words.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !rebuilt.isEmpty {
+                cleanedSegments.append(rebuilt)
+            }
+        }
+
+        let candidate = cleanedSegments.first(where: { $0.rangeOfCharacter(from: .letters) != nil })
+            ?? uppercased
+        return candidate.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+    }
+
+    static func normalizeMerchantDisplayName(_ rawValue: String) -> String? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        var sanitized = trimmed
+            .replacingOccurrences(of: "[0-9]{2,}", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "[_#*]+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if sanitized.contains(".") {
+            let dotParts = sanitized
+                .split(separator: ".")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if !dotParts.isEmpty {
+                sanitized = dotParts.joined(separator: " ")
+            }
+        }
+
+        var tokens = sanitized
+            .components(separatedBy: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        while let first = tokens.first, merchantNoiseTerms.contains(first.lowercased()) {
+            tokens.removeFirst()
+        }
+        while let last = tokens.last, merchantCorporateSuffixes.contains(last.lowercased()) {
+            tokens.removeLast()
+        }
+
+        guard !tokens.isEmpty else { return nil }
+
+        let normalized = tokens
+            .map { $0.lowercased().capitalized }
+            .joined(separator: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let validated = validatedMerchantDisplayName(from: normalized, rawValue: trimmed) {
+            return validated
+        }
+
+        return fallbackMerchantDisplayName(from: trimmed)
+    }
+
+    private static func validatedMerchantDisplayName(from candidate: String, rawValue: String) -> String? {
+        let cleaned = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+
+        let hasLetters = cleaned.rangeOfCharacter(from: .letters) != nil
+        guard hasLetters, cleaned.count >= 3 else { return nil }
+
+        let normalizedRaw = rawValue
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+            .replacingOccurrences(of: "[0-9]{2,}", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "[_#*]+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCandidate = cleaned
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .lowercased()
+            .replacingOccurrences(of: "[0-9]{2,}", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidateLooksLikeRaw = normalizedCandidate == normalizedRaw
+
+        return candidateLooksLikeRaw ? nil : cleaned
+    }
+
+    static func fallbackMerchantDisplayName(from rawValue: String) -> String? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        var working = trimmed
+            .folding(options: [.diacriticInsensitive], locale: .current)
+            .lowercased()
+            .replacingOccurrences(of: "[0-9]{2,}", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\b[x*]{2,}[0-9]*\\b", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "[_#*]+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "[,;|/\\\\()\\[\\]{}]+", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        for prefix in fallbackPaymentPrefixes.sorted(by: { $0.count > $1.count }) {
+            if working.hasPrefix(prefix + " ") {
+                working.removeFirst(prefix.count)
+                working = working.trimmingCharacters(in: .whitespacesAndNewlines)
+                break
+            }
+        }
+
+        var tokens = working
+            .components(separatedBy: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        while let first = tokens.first, fallbackLeadingConnectors.contains(first) {
+            tokens.removeFirst()
+        }
+
+        tokens = tokens.filter { token in
+            let lower = token.lowercased()
+            if merchantNoiseTerms.contains(lower) { return false }
+            if merchantCorporateSuffixes.contains(lower) { return false }
+            if lower.rangeOfCharacter(from: .decimalDigits) != nil { return false }
+            if lower.count <= 1 { return false }
+            return true
+        }
+
+        while let last = tokens.last, merchantCorporateSuffixes.contains(last.lowercased()) {
+            tokens.removeLast()
+        }
+
+        guard !tokens.isEmpty else { return nil }
+
+        let fallback = tokens
+            .map { $0.lowercased().capitalized }
+            .joined(separator: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return fallback.isEmpty ? nil : fallback
+    }
+
+    // TODO: Improve accuracy further by adding lightweight pre-cleaning of transaction strings
+    // before sending to the AI (remove numbers, card patterns, etc.)
     /// Sugere uma categoria para um estabelecimento quando não há histórico local suficiente.
     static func suggestCategory(
         merchantName: String,
         settings: AISettings,
         options: [CategorySuggestionOption]
     ) async throws -> CategorySuggestionResult? {
-        let merchant = merchantName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let merchant = prepareMerchantTextForAI(merchantName)
         guard !merchant.isEmpty, !options.isEmpty else { return nil }
 
+        print("🤖 [AI] INICIO DA BUSCA PELA CATEGORIA")
+        
         let optionsText = options.map { option in
-            if let subcategoryName = option.subcategoryName, !subcategoryName.isEmpty {
-                return "- \(option.categoryName) / \(subcategoryName)"
+            if let subcategoryDisplayName = option.subcategoryDisplayName, !subcategoryDisplayName.isEmpty {
+                return "- category_key=\(option.categorySystemKey ?? "") | category_label=\(option.categoryDisplayName) | subcategory_key=\(option.subcategorySystemKey ?? "") | subcategory_label=\(subcategoryDisplayName)"
             }
-            return "- \(option.categoryName)"
+            return "- category_key=\(option.categorySystemKey ?? "") | category_label=\(option.categoryDisplayName)"
         }.joined(separator: "\n")
 
         let system = """
-        You are a merchant categoriser. Given a bank statement description and a list of \
-        expense categories, return a JSON object with four fields:
-        - "merchant": the clean brand name (e.g. "Cinemark", "Netflix", "Uber"). \
-          Use the well-known brand name, NOT the business type. \
-          If the brand is unrecognisable, clean up the raw text.
-        - "category": the best matching category, copied verbatim from the list. \
-          If unsure, use empty string.
-        - "subcategory": the best matching subcategory, copied verbatim from the list. \
-          If none fits, use empty string.
-        - "confidence": integer 0–100 representing how confident you are in the category match. \
-          70 or above means you are reasonably sure. Below 70 means you are guessing.
+        You are a global bank transaction categorization engine for a personal finance app.
 
-        Rules: only use category/subcategory values present in the list. No markdown. No extra text. JSON only.
+        \(merchantLanguageInstruction())
+
+        ---
+
+        STEP 1 — EXTRACT MERCHANT NAME
+
+        Raw bank statement strings contain noise. Strip everything that is not the brand/business name:
+        - Payment words: PIX, BOLETO, FATURA, PAGAMENTO, PAYMENT, BIZUM, TRANSFERENCIA
+        - Transaction type: COMPRA, PURCHASE, DEBIT, CREDIT, DÉBITO, CRÉDITO
+        - Channel: POS, ONLINE, MOBILE, CARD, TERMINAL, ATM
+        - Location noise: city names, country codes, region codes
+        - Number noise: digit sequences, masked cards (XXXX, ****), timestamps
+        - Corporate suffixes: SL, SA, BV, SARL, LTD, LTDA, INC, GMBH, S.A., S.L.
+        - Generic connectors: AT, EN, IN, DE, COM, NET
+
+        Keep ONLY the actual business or brand name. Output in Title Case — never ALL CAPS.
+
+        Cleaning examples:
+        - "PAGO MOVIL EN ADENTIS ALCOBEN, ALCOBENDAS ES" → "Adentis"
+        - "UBER BV AMSTERDAM NL" → "Uber"
+        - "UBER EATS 800-253-9377" → "Uber Eats"
+        - "AMAZON EU SARL LU" → "Amazon"
+        - "AMZN MKTP US 123456789" → "Amazon"
+        - "NETFLIX.COM 866-579-7172 CA" → "Netflix"
+        - "COMPRA PIX IFOOD*RESTAURANTE SABOR" → "iFood"
+        - "POS MERCADONA 00123 MADRID" → "Mercadona"
+        - "SPOTIFY AB STOCKHOLM" → "Spotify"
+        - "GLOVO DELIVERY BCN" → "Glovo"
+        - "MCN*MCDONALDS 12345" → "McDonald's"
+        - "SHELL SERVICE STATION 001" → "Shell"
+
+        ---
+
+        STEP 2 — CLASSIFY
+
+        Use ONLY the category_key and subcategory_key values from the provided list. Never invent keys.
+
+        GROCERIES (category_key: groceries)
+          Supermarkets, hypermarkets, grocery chains → subcategory_key: groceries.market
+            Brands: Mercadona, Carrefour, Lidl, Aldi, DIA, Eroski, Pão de Açúcar, Extra, Walmart, Tesco, Whole Foods, Kroger, Morrisons, Sainsbury's
+          Farmers markets, open-air food markets → groceries.fair
+          Butcher shops, meat stores → groceries.butcher
+          Bakeries, bread shops, pastry shops → groceries.bakery
+          Produce shops, fruit and vegetable stores → groceries.produce
+
+        RESTAURANTS (category_key: restaurants)
+          Sit-down restaurants, diners → subcategory_key: restaurants.lunchDinner
+          Food delivery apps → restaurants.delivery
+            Brands: iFood, Uber Eats, Glovo, Rappi, DoorDash, Deliveroo, Just Eat, Pedidos Ya
+          Fast food chains → restaurants.fastFood
+            Brands: McDonald's, Burger King, KFC, Subway, Domino's, Pizza Hut, Wendy's, Five Guys, Popeyes
+          Coffee shops, cafés, snack bars → restaurants.coffeeSnack
+            Brands: Starbucks, Costa Coffee, Tim Hortons, Nespresso, Dunkin', Bob's Coffee
+          Bars, pubs, breweries → restaurants.bars
+
+        TRANSPORT (category_key: transport)
+          Gas/petrol stations → subcategory_key: transport.fuel
+            Brands: Shell, BP, Repsol, Petrobras, Ipiranga, Cepsa, Total, Galp, Esso, Chevron
+          Parking lots, garages → transport.parking
+          Bus, subway, metro, commuter rail → transport.publicTransit
+            Brands: RENFE, SNCF, DB Bahn, CPTM, Metrô SP, Transporte Madrid, STCP, TfL, BART
+          Ride-hailing apps (rides, not food) → transport.rideHailing
+            Brands: Uber (rides), Lyft, Cabify, 99, InDriver, DiDi, Bolt rides
+          Car maintenance, tire shops, mechanics → transport.maintenance
+          Toll roads, highway fees → transport.tolls
+          ⚠️ "Uber" alone → transport.rideHailing. "Uber Eats" → restaurants.delivery.
+          ⚠️ "Bolt" for scooters/rides → transport.rideHailing. "Bolt" for food → restaurants.delivery.
+
+        HEALTH (category_key: health)
+          Health insurance, medical plans → subcategory_key: health.insurance
+          Doctors, clinics, hospitals → health.consultation
+          Pharmacies, drugstores → health.pharmacy
+            Brands: Farmácia São João, Droga Raia, Ultrafarma, CVS, Boots, Farmacia Guadalajara
+          Lab tests, diagnostics → health.tests
+          Dentists, dental clinics → health.dentist
+
+        TRAVEL (category_key: travel)
+          Airlines, flight bookings → subcategory_key: travel.tickets
+            Brands: TAM, GOL, Azul, Iberia, Ryanair, EasyJet, LATAM, Vueling, TAP, British Airways, Delta
+          Hotels, hostels, short-term rentals → travel.lodging
+            Brands: Airbnb, Booking.com, Expedia, Hotels.com, NH Hotels, Marriott, Hilton
+          Tours, excursions → travel.tours
+          Car rental agencies → travel.carRental
+            Brands: Hertz, Avis, Europcar, Sixt, Localiza, Unidas, Enterprise
+
+        EDUCATION (category_key: education)
+          Schools, universities, tutoring centers → subcategory_key: education.school
+          Online course platforms → education.courses
+            Brands: Coursera, Udemy, Duolingo, Skillshare, LinkedIn Learning, Alura, Hotmart
+          Bookstores → education.books
+          School supplies stores → education.supplies
+
+        LEISURE (category_key: leisure)
+          Cinemas, theaters, concerts, event tickets → subcategory_key: leisure.moviesShows
+            Brands: Cinemark, Cinépolis, Odeon, UCI, Ticketmaster, Ingresso.com
+          Hobbies, arts and crafts → leisure.hobbies
+          Video game purchases (one-time, not subscriptions) → leisure.games
+
+        SHOPPING (category_key: shopping)
+          Clothing and apparel → subcategory_key: shopping.clothes
+            Brands: Zara, H&M, Mango, Renner, C&A, Shein, Pull&Bear, Bershka, Stradivarius, Primark
+          Footwear → shopping.shoes
+            Brands: Nike, Adidas, Arezzo, Schutz, Vans, Converse, Foot Locker
+          Accessories, jewelry → shopping.accessories
+          Gifts, general retail, department stores → shopping.gifts
+            Brands: El Corte Inglés, Americanas, Casas Bahia
+          ⚠️ Amazon marketplace order → shopping. Amazon Prime subscription → subscriptions.saas.
+          ⚠️ Apple hardware/App Store purchase → shopping. Apple iCloud → subscriptions.cloudBackup. Apple TV+ → subscriptions.streaming.
+
+        PETS (category_key: pets)
+          Pet food and supplies stores → subcategory_key: pets.store
+            Brands: Petco, Cobasi, Petz, Zooplus, Animalis
+          Veterinary clinics → pets.vet
+          Pet grooming services → pets.grooming
+
+        PERSONAL CARE (category_key: personalCare)
+          Hair salons, barbershops, beauty salons → subcategory_key: personalCare.hairBeauty
+          Hygiene product stores → personalCare.hygiene
+          Cosmetics and perfumeries → personalCare.cosmetics
+            Brands: Sephora, O Boticário, Natura, L'Occitane, Douglas, Primor
+
+        FINANCIAL (category_key: financial)
+          Bank fees, account maintenance charges → subcategory_key: financial.bankFees
+          Insurance (life, home, non-health) → financial.insurance
+          Loan repayments → financial.loan
+          Government taxes, fees → financial.taxes
+          Interest charges → financial.interestFees
+
+        SUBSCRIPTIONS (category_key: subscriptions)
+          Video streaming → subcategory_key: subscriptions.streaming
+            Brands: Netflix, Disney+, HBO Max, Amazon Prime Video, Apple TV+, Paramount+, Peacock, Globoplay
+          Music streaming → subscriptions.music
+            Brands: Spotify, Apple Music, Deezer, Tidal, Amazon Music, YouTube Music
+          Cloud storage → subscriptions.cloudBackup
+            Brands: iCloud, Google One, Dropbox, OneDrive, Backblaze
+          Software/SaaS → subscriptions.saas
+            Brands: Adobe, Microsoft 365, Notion, Slack, Figma, Canva, GitHub, 1Password, NordVPN
+          Mobile apps, App Store, Google Play → subscriptions.apps
+          Game subscriptions → subscriptions.games
+            Brands: Xbox Game Pass, PlayStation Plus, EA Play, Nintendo Online
+
+        SPORTS (category_key: sports)
+          Gyms, fitness centers, CrossFit boxes → subcategory_key: sports.gym
+            Brands: SmartFit, Bodytech, Planet Fitness, Holmes Place, FitLife, Anytime Fitness
+          Running events, race registrations → sports.running
+          Sports equipment and multi-sport retailers → sports.general
+            Brands: Decathlon, Nike (equipment), Adidas (equipment), Sport Zone
+          Swimming pools, aquatic centers → sports.swimming
+
+        HOUSING (category_key: housing)
+          Rent payments → subcategory_key: housing.rent
+          Mortgage / home loan → housing.mortgage
+          Condo/HOA fees → housing.condo
+          Electricity/power utilities → housing.energy
+          Water utility → housing.water
+          Gas utility (home) → housing.gas
+          Internet service provider → housing.internet
+          Mobile phone plan → housing.phone
+          Cable TV, satellite → housing.tvStreaming
+          Property tax → housing.propertyTax
+
+        OTHER (category_key: other)
+          Charities, NGOs, donations → subcategory_key: other.donations
+          Clearly gift-oriented stores → other.gifts
+          Truly unclassifiable → other.misc
+
+        ---
+
+        CONFIDENCE:
+        - 90–100: well-known brand with clear category (Spotify → subscriptions.music, Mercadona → groceries.market)
+        - 75–89: merchant type is clear even if brand is unknown (pharmacy → health.pharmacy)
+        - below 70: genuinely ambiguous or too noisy — return empty strings for category_key and subcategory_key
+
+        ---
+
+        OUTPUT: Return ONLY valid JSON. No markdown. No explanation.
+
+        {
+          "merchant": string,
+          "category_key": string,
+          "subcategory_key": string,
+          "confidence": number
+        }
         """
 
         let user = """
@@ -575,7 +967,8 @@ struct AIService {
         #endif
 
         guard
-            let data = clean.data(using: .utf8),
+            let jsonText = extractFirstJSONObjectString(from: clean) ?? extractFirstJSONObjectString(from: responseText),
+            let data = jsonText.data(using: .utf8),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             #if DEBUG
@@ -584,17 +977,32 @@ struct AIService {
             throw AIError.invalidResponse
         }
 
-        let categoryName    = (json["category"]    as? String) ?? ""
-        let subcategoryName = (json["subcategory"] as? String) ?? ""
-        let merchantName    = (json["merchant"]    as? String) ?? ""
+        let categorySystemKey = ((json["category_key"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let subcategorySystemKey = ((json["subcategory_key"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let merchantName = normalizeMerchantDisplayName((json["merchant"] as? String) ?? "")
         let confidence      = (json["confidence"]  as? Int)    ?? 100  // default high if omitted
 
         #if DEBUG
         print("🤖 [AI Category] confidence: \(confidence)%")
         #endif
 
-        guard !categoryName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
+        guard !categorySystemKey.isEmpty else {
+            return fallbackOtherCategoryResult(from: options, resolvedMerchantName: merchantName)
+        }
+
+        let selectedOption = options.first {
+            $0.categorySystemKey == categorySystemKey && (
+                ($0.subcategorySystemKey ?? "") == subcategorySystemKey
+                || ($0.subcategorySystemKey == nil && subcategorySystemKey.isEmpty)
+            )
+        } ?? options.first {
+            $0.categorySystemKey == categorySystemKey && $0.subcategorySystemKey == nil
+        }
+
+        guard let selectedCategory = selectedOption ?? options.first(where: { $0.categorySystemKey == categorySystemKey }) else {
+            return fallbackOtherCategoryResult(from: options, resolvedMerchantName: merchantName)
         }
 
         // Below 70 % confidence → fall back to "Outros" if it exists in the list, else nil
@@ -603,21 +1011,24 @@ struct AIService {
             print("🤖 [AI Category] ⚠️ confidence \(confidence)% < 70 — falling back to Outros")
             #endif
             let outros = options.first {
-                $0.categoryName.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-                    .contains("outro")
+                $0.categorySystemKey == DefaultCategories.otherCategorySystemKey
             }
             guard let outros else { return nil }
             return CategorySuggestionResult(
+                categorySystemKey:    outros.categorySystemKey,
                 categoryName:         outros.categoryName,
+                subcategorySystemKey: nil,
                 subcategoryName:      nil,
-                resolvedMerchantName: merchantName.isEmpty ? nil : merchantName
+                resolvedMerchantName: merchantName
             )
         }
 
         return CategorySuggestionResult(
-            categoryName:         categoryName,
-            subcategoryName:      subcategoryName.isEmpty  ? nil : subcategoryName,
-            resolvedMerchantName: merchantName.isEmpty     ? nil : merchantName
+            categorySystemKey:    selectedCategory.categorySystemKey,
+            categoryName:         selectedCategory.categoryName,
+            subcategorySystemKey: selectedOption?.subcategorySystemKey,
+            subcategoryName:      selectedOption?.subcategoryName,
+            resolvedMerchantName: merchantName
         )
     }
 
@@ -651,7 +1062,6 @@ struct AIService {
         }
         let trendLabel = pct >= 0 ? "+\(pct)%" : "\(pct)%"
 
-        //todo:localizar aqui
         let system = """
         You are a personal finance advisor. Reply in the user's preferred app language: \(responseLanguageInstruction()).
         Be direct and practical. Use 1 or 2 sentences maximum. No greetings. No markdown.
@@ -729,23 +1139,63 @@ struct AIService {
         merchant: String,
         options: [CategorySuggestionOption]
     ) async throws -> CategorySuggestionResult? {
+        let normalizedMerchant = normalizeMerchantDisplayName(merchant)
 
-        // Deduplicate root category names preserving order
+        // Deduplicate root categories preserving order
         var seen = Set<String>()
-        let rootNames: [String] = options.compactMap { o in
-            seen.insert(o.categoryName).inserted ? o.categoryName : nil
+        let rootOptions: [CategorySuggestionOption] = options.compactMap { option in
+            guard option.subcategorySystemKey == nil else { return nil }
+            let uniqueKey = option.categorySystemKey ?? option.categoryName
+            return seen.insert(uniqueKey).inserted ? option : nil
         }
 
         // ── Step 1: root category + confidence ──────────────────────────────
-        let step1 = """
-        Merchant: "\(merchant)"
-        Categories: \(rootNames.joined(separator: ", "))
+        // For custom categories (no systemKey), use lowercased name as identifier
+        let validRootOptions = rootOptions.map { option -> CategorySuggestionOption in
+            if (option.categorySystemKey ?? "").isEmpty {
+                return CategorySuggestionOption(
+                    categorySystemKey: option.categoryName.lowercased().replacingOccurrences(of: " ", with: "_"),
+                    categoryName: option.categoryName,
+                    categoryDisplayName: option.categoryDisplayName,
+                    subcategorySystemKey: nil,
+                    subcategoryName: nil,
+                    subcategoryDisplayName: nil
+                )
+            }
+            return option
+        }
 
-        Which single category from the list above best matches this merchant?
-        Reply in this exact format: CATEGORY_NAME|CONFIDENCE
-        where CONFIDENCE is a number from 0 to 100 (your certainty).
-        Example: "Lazer|85"
-        If none fits, reply with nothing.
+        let step1 = """
+        \(merchantLanguageInstruction())
+
+        Merchant name: "\(normalizedMerchant ?? merchant)"
+
+        Step 1 — What TYPE of business is this? (cinema, pharmacy, supermarket, gym, etc.)
+        Step 2 — Match that type to the best category_key below.
+
+        Type → category_key reference:
+        cinema/theatre/show/concert/museum/park/zoo → leisure
+        restaurant/cafe/bar/delivery/fast food/pub → restaurants
+        supermarket/grocery/bakery/butcher/market → groceries
+        pharmacy/clinic/hospital/dentist/lab → health
+        gym/fitness/sport/swimming/running → sports
+        fuel/taxi/bus/metro/parking/toll/airline → transport
+        hotel/hostel/airbnb/tour/car rental → travel
+        streaming/music/cloud/saas/app subscription → subscriptions
+        clothing/shoes/mall/retail/accessories → shopping
+        school/university/course/bookstore → education
+        rent/utility/electricity/water/internet/phone → housing
+        bank fee/insurance/loan/tax → financial
+        salon/barber/spa/cosmetics → personalCare
+        pet store/vet/grooming → pets
+
+        Available category keys:
+        \(validRootOptions.map { "\($0.categorySystemKey ?? $0.categoryName) → \($0.categoryDisplayName)" }.joined(separator: "\n"))
+
+        Reply ONLY in this exact format (no extra text):
+        CATEGORY_KEY|CONFIDENCE|reason
+        Example: leisure|90|Cinemark is a cinema chain
+        If truly unknown, reply: other|50|unknown merchant
         """
 
         #if DEBUG
@@ -753,36 +1203,39 @@ struct AIService {
         #endif
 
         guard let rawStep1 = await LocalAIService.classify(prompt: step1), !rawStep1.isEmpty else {
-            return nil
+            return fallbackOtherCategoryResult(from: options, resolvedMerchantName: normalizedMerchant)
         }
 
         #if DEBUG
         print("🤖 [AI/local step1] response: '\(rawStep1)'")
         #endif
 
-        // Parse "CategoryName|confidence" — confidence is optional for robustness
-        let step1Parts  = rawStep1.split(separator: "|", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-        let rawRoot     = step1Parts[0]
-        let localConf   = step1Parts.count > 1 ? Int(step1Parts[1]) ?? 100 : 100
+        // Parse "CATEGORY_KEY|CONFIDENCE|Reasoning" — split all parts so confidence index is always [1]
+        let step1Parts = rawStep1.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+        let rawRoot    = step1Parts[0]
+        let localConf  = step1Parts.count > 1 ? Int(step1Parts[1]) ?? 100 : 100
 
         let fold: (String) -> String = {
             $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
         }
         let foldedRoot = fold(rawRoot)
-        guard !foldedRoot.isEmpty else { return nil }
+        guard !foldedRoot.isEmpty else {
+            return fallbackOtherCategoryResult(from: options, resolvedMerchantName: normalizedMerchant)
+        }
 
-        let matchedRoot = rootNames.first { fold($0) == foldedRoot }
-            ?? rootNames.first { fold($0).contains(foldedRoot) || foldedRoot.contains(fold($0)) }
+        let matchedRoot = validRootOptions.first { fold($0.categorySystemKey ?? "") == foldedRoot }
+            ?? validRootOptions.first { fold($0.categorySystemKey ?? "").contains(foldedRoot) || foldedRoot.contains(fold($0.categorySystemKey ?? "")) }
+            ?? validRootOptions.first { fold($0.categoryDisplayName) == foldedRoot || fold($0.categoryName) == foldedRoot }
 
         guard let matchedRoot else {
             #if DEBUG
-            print("🤖 [AI/local step1] ❌ '\(rawRoot)' not found in [\(rootNames.joined(separator: ", "))]")
+            print("🤖 [AI/local step1] ❌ '\(rawRoot)' not found in [\(validRootOptions.compactMap(\.categorySystemKey).joined(separator: ", "))]")
             #endif
-            return nil
+            return fallbackOtherCategoryResult(from: options, resolvedMerchantName: normalizedMerchant)
         }
 
         #if DEBUG
-        print("🤖 [AI/local step1] ✅ matched root: '\(matchedRoot)' confidence: \(localConf)%")
+            print("🤖 [AI/local step1] ✅ matched root: '\(matchedRoot.categorySystemKey ?? matchedRoot.categoryName)' confidence: \(localConf)%")
         #endif
 
         // Below 70 % → fall back to "Outros" if available, else nil
@@ -790,29 +1243,30 @@ struct AIService {
             #if DEBUG
             print("🤖 [AI/local step1] ⚠️ confidence \(localConf)% < 70 — falling back to Outros")
             #endif
-            let outros = rootNames.first {
-                fold($0).contains("outro")
-            }
+            let outros = rootOptions.first { $0.categorySystemKey == DefaultCategories.otherCategorySystemKey }
             return CategorySuggestionResult(
-                categoryName:         outros ?? matchedRoot,
+                categorySystemKey:    (outros ?? matchedRoot).categorySystemKey,
+                categoryName:         (outros ?? matchedRoot).categoryName,
+                subcategorySystemKey: nil,
                 subcategoryName:      nil,
-                resolvedMerchantName: nil
+                resolvedMerchantName: normalizedMerchant
             )
         }
         // ── Step 2: subcategory (only if children exist) ─────────────────────
-        let subNames = options.compactMap { o -> String? in
-            guard o.categoryName == matchedRoot, let sub = o.subcategoryName else { return nil }
-            return sub
+        let subOptions = options.filter {
+            $0.categorySystemKey == matchedRoot.categorySystemKey && $0.subcategorySystemKey != nil
         }
 
-        var matchedSub: String? = nil
+        var matchedSub: CategorySuggestionOption? = nil
 
-        if !subNames.isEmpty {
+        if !subOptions.isEmpty {
             let step2 = """
-            Merchant: "\(merchant)" (category: \(matchedRoot))
-            Subcategories: \(subNames.joined(separator: ", "))
+            Merchant: "\(merchant)" (category: \(matchedRoot.categoryDisplayName))
+            Subcategories:
+            \(subOptions.map { "key=\($0.subcategorySystemKey ?? "") | label=\($0.subcategoryDisplayName ?? "")" }.joined(separator: "\n"))
 
-            Which subcategory best matches? Reply with only the subcategory name. If none fits, reply with nothing.
+            Which subcategory_key best fits this merchant?
+            Reply with only the key (e.g. "restaurants.fastFood"). If none fits, reply with nothing.
             """
 
             #if DEBUG
@@ -824,18 +1278,37 @@ struct AIService {
                 print("🤖 [AI/local step2] response: '\(rawSub)'")
                 #endif
                 let foldedSub = fold(rawSub)
-                matchedSub = subNames.first { fold($0) == foldedSub }
-                    ?? subNames.first { fold($0).contains(foldedSub) || foldedSub.contains(fold($0)) }
+                matchedSub = subOptions.first { fold($0.subcategorySystemKey ?? "") == foldedSub }
+                    ?? subOptions.first { fold($0.subcategorySystemKey ?? "").contains(foldedSub) || foldedSub.contains(fold($0.subcategorySystemKey ?? "")) }
                 #if DEBUG
-                print("🤖 [AI/local step2] matched sub: '\(matchedSub ?? "none")'")
+                print("🤖 [AI/local step2] matched sub: '\(matchedSub?.subcategorySystemKey ?? "none")'")
                 #endif
             }
         }
 
         return CategorySuggestionResult(
-            categoryName:         matchedRoot,
-            subcategoryName:      matchedSub,
-            resolvedMerchantName: nil
+            categorySystemKey:    matchedRoot.categorySystemKey,
+            categoryName:         matchedRoot.categoryName,
+            subcategorySystemKey: matchedSub?.subcategorySystemKey,
+            subcategoryName:      matchedSub?.subcategoryName,
+            resolvedMerchantName: normalizedMerchant
+        )
+    }
+
+    private static func fallbackOtherCategoryResult(
+        from options: [CategorySuggestionOption],
+        resolvedMerchantName: String?
+    ) -> CategorySuggestionResult? {
+        guard let other = options.first(where: { $0.categorySystemKey == DefaultCategories.otherCategorySystemKey }) else {
+            return nil
+        }
+
+        return CategorySuggestionResult(
+            categorySystemKey: other.categorySystemKey,
+            categoryName: other.categoryName,
+            subcategorySystemKey: nil,
+            subcategoryName: nil,
+            resolvedMerchantName: resolvedMerchantName
         )
     }
 
@@ -843,50 +1316,93 @@ struct AIService {
     static func analyzeReceipt(
         ocrText: String,
         settings: AISettings,
-        categoryNames: [String] = []
+        categoryOptions: [ReceiptCategoryOption] = []
     ) async throws -> ReceiptResult {
 
-        let categoriesHint = categoryNames.isEmpty
+        let userLang = LanguageManager.shared.effective.rawValue
+
+        let categoriesHint = categoryOptions.isEmpty
             ? ""
-            : "\nCategorias disponíveis: \(categoryNames.joined(separator: ", ")). Escolha a mais adequada ou retorne string vazia."
+            : "\n\nAvailable categories (choose the best match):\n\(categoryOptions.map { "- category_key=\($0.categorySystemKey ?? "") | label=\($0.categoryDisplayName)" }.joined(separator: "\n"))"
 
         let system = """
-        You are a receipt data extractor. Analyze the text and return ONLY valid JSON, with no markdown.
-        Exact format: {"valor": 0.0, "estabelecimento": "", "categoria": "", "data": "yyyy-MM-dd", "observacao": ""}
+        You are a financial receipt extractor for a personal finance app.
+        The user's language is \(userLang).
+
+        YOUR ONLY JOB: determine if the text is a purchase receipt/invoice and, if so, extract structured data.
+
+        RECEIPT DETECTION RULES:
+        - A receipt/invoice must have: a merchant/store name AND a total amount paid.
+        - Bank statements, screenshots, menus without totals, chat messages, photos without purchase context → NOT a receipt.
+        - If uncertain, set "is_receipt": false.
+
+        AMOUNT RULES (critical):
+        - Always extract the FINAL TOTAL the customer paid (after discounts, taxes, tips).
+        - Prefer fields labeled: Total, Total Pago, Valor Total, Grand Total, Amount Due, Importe Total.
+        - NEVER use: Subtotal, Sub-total, Partial, Parcial, Tax alone, Tip alone.
+        - If multiple totals exist (split bill, installments), use the largest single-payment amount.
+        - Strip currency symbols (R$, $, €, £, ¥) — return only the numeric value.
+        - Use decimal dot (not comma): R$ 1.234,56 → 1234.56
+
+        DATE RULES:
+        - Return purchase date in yyyy-MM-dd format.
+        - If only time is shown without date, return empty string.
+        - Common formats: DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD — parse all correctly.
+
+        OUTPUT: Return ONLY a single valid JSON object. No markdown, no explanation, no extra text.
         """
+
         let user = """
-        Extract the data from this receipt:\(categoriesHint)
+        Analyze this OCR text and extract receipt data.\(categoriesHint)
 
+        OCR TEXT:
+        ---
         \(ocrText)
+        ---
 
-        Return JSON only:
+        Return this exact JSON:
         {
-          "valor": <total paid, decimal number>,
-          "estabelecimento": "<merchant name>",
-          "categoria": "<best matching category from the list, or empty string>",
-          "data": "<purchase date in yyyy-MM-dd, or empty string>",
-          "observacao": "<useful detail in one short sentence, or empty string>"
+          "is_receipt": <true if this is clearly a purchase receipt or invoice, false otherwise>,
+          "valor": <total amount paid as decimal number, e.g. 42.50, or 0 if not a receipt>,
+          "estabelecimento": "<merchant/store name, cleaned up, or empty string>",
+          "categoria_key": "<category_key from the list above that best matches, or empty string>",
+          "data": "<purchase date as yyyy-MM-dd, or empty string>",
+          "observacao": "<one short sentence with the most useful detail, e.g. main item or purpose, or empty string>"
         }
         """
 
         let responseText: String
 
         // ── Apple Intelligence (on-device, sem chave de API) ──────────────
+        // The on-device model is very small (~3B). Use a minimal prompt so it
+        // reliably returns valid JSON instead of ignoring complex instructions.
         if settings.provider == .local {
+            let catList = categoryOptions.isEmpty
+                ? ""
+                : " Categories: \(categoryOptions.prefix(10).map { "\($0.categorySystemKey ?? "")" }.joined(separator: ", "))."
+
+            let localPrompt = """
+            Return ONLY valid JSON. No explanation.
+            Is this text a purchase receipt? If yes, extract total amount paid, store name, date.
+            JSON format: {"is_receipt":true,"valor":0.0,"estabelecimento":"","categoria_key":"","data":"","observacao":""}
+            Rules: valor = final total paid (not subtotal, not tax alone). Use decimal dot (e.g. 42.50).\(catList)
+
+            TEXT:
+            \(ocrText.prefix(800))
+            """
+
             let emptyContext = FinanceContext(
                 transactions: [],
                 goals: [],
                 accounts: [],
-                currencyCode: "BRL",
+                categories: [],
+                currencyCode: CurrencyOption.defaultCode,
                 appLanguageCode: LanguageManager.shared.effective.rawValue,
                 localeIdentifier: Locale.current.identifier,
                 timeZoneIdentifier: TimeZone.current.identifier
             )
-            // Combine system instructions + user query into a single message
-            // so that LocalAIService's own system prompt doesn't interfere
-            let combinedMessage = "\(system)\n\n\(user)"
             let result = try await LocalAIService.send(
-                userMessage: combinedMessage,
+                userMessage: localPrompt,
                 context: emptyContext
             )
             responseText = result.content
@@ -959,23 +1475,50 @@ struct AIService {
             .replacingOccurrences(of: "```",     with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        print("📄 [ReceiptAI · \(settings.provider.label)] raw response: \(clean.prefix(300))")
+
         guard
             let data = clean.data(using: .utf8),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { throw AIError.invalidResponse }
+        else {
+            print("❌ [ReceiptAI · \(settings.provider.label)] JSON parse failed — raw was: \(clean.prefix(300))")
+            throw AIError.invalidResponse
+        }
 
+        let isReceipt: Bool = {
+            if let b = json["is_receipt"] as? Bool { return b }
+            if let s = json["is_receipt"] as? String { return s.lowercased() == "true" }
+            // Fallback: treat as receipt if amount > 0 and store name present (older model behaviour)
+            return false
+        }()
         let amount: Double = {
             if let d = json["valor"] as? Double { return d }
-            if let s = json["valor"] as? String { return Double(s) ?? 0 }
+            if let i = json["valor"] as? Int    { return Double(i) }
+            if let s = json["valor"] as? String {
+                // Handle comma-as-decimal (e.g. "1.234,56" → 1234.56)
+                let normalized = s
+                    .replacingOccurrences(of: ".", with: "")  // remove thousand sep
+                    .replacingOccurrences(of: ",", with: ".")  // decimal
+                return Double(normalized) ?? Double(s) ?? 0
+            }
             return 0
         }()
-        let storeName  = (json["estabelecimento"] as? String) ?? ""
-        let category   = (json["categoria"]      as? String) ?? ""
-        let notes      = (json["observacao"]     as? String) ?? ""
-        let dateString = (json["data"]           as? String) ?? ""
-        let date       = CSVImportService.parseDate(dateString)
-        return ReceiptResult(amount: amount, storeName: storeName,
-                             suggestedCategoryName: category, notes: notes, date: date)
+        let storeName = normalizeMerchantDisplayName((json["estabelecimento"] as? String) ?? "") ?? ""
+        let categorySystemKey = ((json["categoria_key"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let matchedCategory = categoryOptions.first { $0.categorySystemKey == categorySystemKey }
+        let notes = (json["observacao"] as? String) ?? ""
+        let dateString = (json["data"] as? String) ?? ""
+        let date = CSVImportService.parseDate(dateString)
+        return ReceiptResult(
+            isReceipt: isReceipt,
+            amount: amount,
+            storeName: storeName,
+            suggestedCategorySystemKey: matchedCategory?.categorySystemKey,
+            suggestedCategoryName: matchedCategory?.categoryName ?? "",
+            notes: notes,
+            date: date
+        )
     }
 
     // MARK: - Raw message helpers (sem SwiftData, para uso interno)
@@ -1136,6 +1679,54 @@ struct AIService {
         // Gemini: { "error": { "message": "..." } } (same shape)
         return nil
     }
+
+    private static func extractFirstJSONObjectString(from text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.first == "{", trimmed.last == "}" {
+            return trimmed
+        }
+
+        guard let start = trimmed.firstIndex(of: "{") else { return nil }
+
+        var depth = 0
+        var inString = false
+        var isEscaping = false
+
+        for index in trimmed.indices[start...] {
+            let character = trimmed[index]
+
+            if inString {
+                if isEscaping {
+                    isEscaping = false
+                } else if character == "\\" {
+                    isEscaping = true
+                } else if character == "\"" {
+                    inString = false
+                }
+                continue
+            }
+
+            if character == "\"" {
+                inString = true
+                continue
+            }
+
+            if character == "{" {
+                depth += 1
+                continue
+            }
+
+            if character == "}" {
+                depth -= 1
+                if depth == 0 {
+                    return String(trimmed[start...index])
+                }
+            }
+        }
+
+        return nil
+    }
 }
 
 private extension AIService {
@@ -1149,6 +1740,230 @@ private extension AIService {
             return "Spanish (es)"
         case .system:
             return "English (en)"
+        }
+    }
+
+    /// Returns a language-aware context block for merchant categorization prompts.
+    /// Tells the AI which language the bank statements are likely in and provides
+    /// local vocabulary hints so terms like "Drogaria" or "Farmacia" are recognized.
+    static func merchantLanguageInstruction() -> String {
+        switch LanguageManager.shared.effective {
+
+        case .ptBR, .system:
+            return """
+            LANGUAGE CONTEXT:
+            The user's app language is Brazilian Portuguese (pt-BR).
+            Bank statements are likely in Portuguese. Interpret merchant names using Portuguese business vocabulary and patterns.
+
+            IMPORTANT:
+            - Merchant strings may contain noise (numbers, locations, payment types, etc.)
+            - Focus only on the business type and brand identity
+            - Ignore prefixes like: PIX, PAGAMENTO, COMPRA, TRANSFERENCIA, BOLETO
+
+            KEY CATEGORY MAPPINGS (Portuguese):
+
+            HEALTH (health.*)
+            - Farmácia, Drogaria, Droga, Farma → health.pharmacy
+            - Clínica, Hospital, UPA, Pronto Socorro, Laboratório → health.consultation
+            - Dentista, Odonto → health.dentist
+
+            TRANSPORT (transport.*)
+            - Posto, Combustível, Gasolina, Etanol, Diesel → transport.fuel
+            - Uber, 99, Cabify → transport.rideHailing
+            - Estacionamento, Zona Azul, Parking → transport.parking
+            - Pedágio, Sem Parar → transport.tolls
+            - Metrô, CPTM, Ônibus, BRT, VLT → transport.publicTransit
+
+            GROCERIES (groceries.*)
+            - Mercado, Supermercado, Hipermercado → groceries.market
+            - Hortifruti, Sacolão, Feira → groceries.produce
+            - Açougue, Frigorífico → groceries.butcher
+            - Padaria, Panificadora, Confeitaria → groceries.bakery
+
+            RESTAURANTS (restaurants.*)
+            - Restaurante, Lanchonete → restaurants.lunchDinner
+            - Ifood, Rappi → restaurants.delivery
+            - McDonald's, Burger King → restaurants.fastFood
+            - Cafeteria, Café → restaurants.coffeeSnack
+            - Bar, Pub → restaurants.bars
+
+            SHOPPING (shopping.*)
+            - Loja, Magazine, Shopping → shopping.gifts
+            - Roupas, Vestuário → shopping.clothes
+            - Calçados, Sapatos → shopping.shoes
+
+            SUBSCRIPTIONS (subscriptions.*)
+            - Netflix, Spotify → subscriptions.streaming / subscriptions.music
+            - iCloud, Google One → subscriptions.cloudBackup
+            - Adobe, Office → subscriptions.saas
+
+            EDUCATION (education.*)
+            - Escola, Colégio, Faculdade → education.school
+            - Curso, Aula Online → education.courses
+            - Livraria → education.books
+            - Papelaria → education.supplies
+
+            PERSONAL CARE (personalCare.*)
+            - Salão, Cabeleireiro, Barbearia → personalCare.hairBeauty
+            - Cosméticos, Perfumaria → personalCare.cosmetics
+
+            FINANCIAL (financial.*)
+            - Tarifa, Juros, Encargo → financial.bankFees
+            - Imposto, Taxa → financial.taxes
+
+            PETS (pets.*)
+            - Petshop → pets.store
+            - Veterinário → pets.vet
+
+            HOUSING (housing.*)
+            - Aluguel → housing.rent
+            - Energia, Luz → housing.energy
+            - Água → housing.water
+            - Internet → housing.internet
+            - Telefone → housing.phone
+            """
+
+        case .es:
+            return """
+            LANGUAGE CONTEXT:
+            The user's app language is Spanish (es).
+            Bank statements are likely in Spanish. Interpret merchant names using Spanish business vocabulary.
+
+            IMPORTANT:
+            - Ignore noise like payment types (PAGO, COMPRA, TRANSFERENCIA)
+            - Focus on business type and merchant identity
+
+            KEY CATEGORY MAPPINGS (Spanish):
+
+            HEALTH (health.*)
+            - Farmacia, Droguería → health.pharmacy
+            - Clínica, Hospital, Centro Médico → health.consultation
+            - Dentista → health.dentist
+
+            TRANSPORT (transport.*)
+            - Gasolinera, Estación de Servicio → transport.fuel
+            - Uber, Cabify, Bolt → transport.rideHailing
+            - Parking, Aparcamiento → transport.parking
+            - Peaje → transport.tolls
+            - Metro, Renfe, Bus → transport.publicTransit
+
+            GROCERIES (groceries.*)
+            - Supermercado, Mercado → groceries.market
+            - Frutería, Verdulería → groceries.produce
+            - Carnicería → groceries.butcher
+            - Panadería → groceries.bakery
+
+            RESTAURANTS (restaurants.*)
+            - Restaurante → restaurants.lunchDinner
+            - Glovo, Uber Eats → restaurants.delivery
+            - McDonald's → restaurants.fastFood
+            - Café → restaurants.coffeeSnack
+            - Bar → restaurants.bars
+
+            SHOPPING (shopping.*)
+            - Tienda, Comercio → shopping.gifts
+            - Ropa → shopping.clothes
+            - Zapatos → shopping.shoes
+
+            SUBSCRIPTIONS (subscriptions.*)
+            - Netflix, Spotify → subscriptions.streaming / subscriptions.music
+            - iCloud, Google One → subscriptions.cloudBackup
+
+            EDUCATION (education.*)
+            - Escuela, Colegio → education.school
+            - Curso → education.courses
+            - Librería → education.books
+            - Papelería → education.supplies
+
+            PERSONAL CARE (personalCare.*)
+            - Peluquería, Barbería → personalCare.hairBeauty
+            - Cosméticos → personalCare.cosmetics
+
+            FINANCIAL (financial.*)
+            - Comisión bancaria → financial.bankFees
+            - Impuesto → financial.taxes
+
+            PETS (pets.*)
+            - Tienda de mascotas → pets.store
+            - Veterinario → pets.vet
+
+            HOUSING (housing.*)
+            - Alquiler → housing.rent
+            - Luz → housing.energy
+            - Agua → housing.water
+            - Internet → housing.internet
+            """
+
+        case .en:
+            return """
+            LANGUAGE CONTEXT:
+            The user's app language is English (en).
+            Bank statements are likely in English. Interpret merchant names using global business vocabulary.
+
+            IMPORTANT:
+            - Merchant strings may include noise (PAYMENT, PURCHASE, TRANSFER, etc.)
+            - Focus on identifying the business type and brand
+
+            KEY CATEGORY MAPPINGS (English):
+
+            HEALTH (health.*)
+            - Pharmacy, Drugstore → health.pharmacy
+            - Clinic, Hospital → health.consultation
+            - Dentist → health.dentist
+
+            TRANSPORT (transport.*)
+            - Gas station, Fuel → transport.fuel
+            - Uber, Lyft → transport.rideHailing
+            - Parking → transport.parking
+            - Toll → transport.tolls
+            - Subway, Bus, Train → transport.publicTransit
+
+            GROCERIES (groceries.*)
+            - Supermarket, Grocery → groceries.market
+            - Produce store → groceries.produce
+            - Butcher → groceries.butcher
+            - Bakery → groceries.bakery
+
+            RESTAURANTS (restaurants.*)
+            - Restaurant → restaurants.lunchDinner
+            - Uber Eats, DoorDash → restaurants.delivery
+            - Fast food → restaurants.fastFood
+            - Coffee shop → restaurants.coffeeSnack
+            - Bar → restaurants.bars
+
+            SHOPPING (shopping.*)
+            - Retail store → shopping.gifts
+            - Clothing store → shopping.clothes
+            - Shoe store → shopping.shoes
+
+            SUBSCRIPTIONS (subscriptions.*)
+            - Netflix, Spotify → subscriptions.streaming / subscriptions.music
+            - iCloud, Google One → subscriptions.cloudBackup
+
+            EDUCATION (education.*)
+            - School → education.school
+            - Courses → education.courses
+            - Bookstore → education.books
+            - Supplies → education.supplies
+
+            PERSONAL CARE (personalCare.*)
+            - Hair salon, Barber → personalCare.hairBeauty
+            - Cosmetics → personalCare.cosmetics
+
+            FINANCIAL (financial.*)
+            - Bank fee → financial.bankFees
+            - Taxes → financial.taxes
+
+            PETS (pets.*)
+            - Pet store → pets.store
+            - Vet → pets.vet
+
+            HOUSING (housing.*)
+            - Rent → housing.rent
+            - Electricity → housing.energy
+            - Water → housing.water
+            - Internet → housing.internet
+            """
         }
     }
 }

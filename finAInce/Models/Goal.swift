@@ -9,13 +9,13 @@ enum GoalPeriod: String, Codable, CaseIterable {
 
 @Model
 final class Goal {
-    @Attribute(.unique) var id: UUID
-    var title: String
-    var targetAmount: Double
-    var period: GoalPeriod
-    var isActive: Bool
-    var emoji: String
-    var createdAt: Date
+    var id: UUID = UUID()
+    var title: String = ""
+    var targetAmount: Double = 0
+    var period: GoalPeriod = GoalPeriod.monthly
+    var isActive: Bool = true
+    var emoji: String = "🎯"
+    var createdAt: Date = Date()
 
     // nil = meta geral (todos os gastos)
     var category: Category?
@@ -25,7 +25,7 @@ final class Goal {
         title: String,
         targetAmount: Double,
         period: GoalPeriod = .monthly,
-        emoji: String = "target",
+        emoji: String = "🎯",
         category: Category? = nil
     ) {
         self.id = UUID()

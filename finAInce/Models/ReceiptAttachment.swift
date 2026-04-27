@@ -7,22 +7,20 @@ enum ReceiptAttachmentKind: String, Codable {
 
     var iconName: String {
         switch self {
-        case .image:
-            return "photo"
-        case .pdf:
-            return "doc.richtext"
+        case .image: return "photo"
+        case .pdf:   return "doc.richtext"
         }
     }
 }
 
 @Model
 final class ReceiptAttachment {
-    @Attribute(.unique) var id: UUID
-    var fileName: String
-    var storedFileName: String
-    var contentType: String
-    var kind: ReceiptAttachmentKind
-    var createdAt: Date
+    var id: UUID = UUID()
+    var fileName: String = ""
+    var storedFileName: String = ""
+    var contentType: String = ""
+    var kind: ReceiptAttachmentKind = ReceiptAttachmentKind.image
+    var createdAt: Date = Date()
 
     var transaction: Transaction?
 

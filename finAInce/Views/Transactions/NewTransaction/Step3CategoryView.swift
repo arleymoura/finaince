@@ -67,7 +67,7 @@ struct Step3CategoryView: View {
                             .padding(.horizontal)
 
                         LazyVGrid(columns: columns, spacing: 12) {
-                            ForEach(selected.subcategories.sorted { $0.sortOrder < $1.sortOrder }) { sub in
+                            ForEach((selected.subcategories ?? []).sorted { $0.sortOrder < $1.sortOrder }) { sub in
                                 CategoryGridItem(
                                     category: sub,
                                     isSelected: state.subcategory?.id == sub.id,
@@ -209,19 +209,29 @@ struct Step3CategoryView: View {
     }
 
     private func isOtherCategory(_ category: Category) -> Bool {
-        let otherNames = ["outros", "other", "others", "otro", "otros"]
-        return otherNames.contains(normalizeMerchant(category.name))
+        category.systemKey == "other"
     }
 
     private func categorySuggestionOptions() -> [AIService.CategorySuggestionOption] {
         rootCategories.flatMap { category in
-            let subcategories = category.subcategories.sorted { $0.sortOrder < $1.sortOrder }
+            let subcategories = (category.subcategories ?? []).sorted { $0.sortOrder < $1.sortOrder }
             let categoryOption = AIService.CategorySuggestionOption(
+                categorySystemKey: category.systemKey,
                 categoryName: category.name,
-                subcategoryName: nil
+                categoryDisplayName: category.displayName,
+                subcategorySystemKey: nil,
+                subcategoryName: nil,
+                subcategoryDisplayName: nil
             )
             let subcategoryOptions = subcategories.map {
-                AIService.CategorySuggestionOption(categoryName: category.name, subcategoryName: $0.name)
+                AIService.CategorySuggestionOption(
+                    categorySystemKey: category.systemKey,
+                    categoryName: category.name,
+                    categoryDisplayName: category.displayName,
+                    subcategorySystemKey: $0.systemKey,
+                    subcategoryName: $0.name,
+                    subcategoryDisplayName: $0.displayName
+                )
             }
             return [categoryOption] + subcategoryOptions
         }
@@ -230,19 +240,23 @@ struct Step3CategoryView: View {
     private func recommendation(
         from suggestion: AIService.CategorySuggestionResult
     ) -> (category: Category, subcategory: Category?)? {
-        let normalizedCategoryName = normalizeMerchant(suggestion.categoryName)
-        let normalizedSubcategoryName = suggestion.subcategoryName.map(normalizeMerchant)
+        let category = rootCategories.first {
+            if let systemKey = suggestion.categorySystemKey {
+                return $0.systemKey == systemKey
+            }
+            return normalizeMerchant($0.name) == normalizeMerchant(suggestion.categoryName)
+        }
 
-        guard let category = rootCategories.first(where: {
-            normalizeMerchant($0.name) == normalizedCategoryName
-        }) else {
+        guard let category else {
             return nil
         }
 
-        let subcategory = normalizedSubcategoryName.flatMap { normalizedName in
-            category.subcategories.first {
-                normalizeMerchant($0.name) == normalizedName
+        let subcategory = (category.subcategories ?? []).first {
+            if let systemKey = suggestion.subcategorySystemKey {
+                return $0.systemKey == systemKey
             }
+            guard let subcategoryName = suggestion.subcategoryName else { return false }
+            return normalizeMerchant($0.name) == normalizeMerchant(subcategoryName)
         }
 
         return (category, subcategory)
@@ -327,7 +341,7 @@ struct CategoryGridItem: View {
                 .background(isSelected ? Color(hex: category.color) : Color(hex: category.color).opacity(0.15))
                 .clipShape(Circle())
 
-            Text(category.name)
+            Text(category.displayName)
                 .font(isSmall ? .caption2 : .caption)
                 .foregroundStyle(isSelected ? Color(hex: category.color) : .primary)
                 .multilineTextAlignment(.center)

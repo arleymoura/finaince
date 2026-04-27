@@ -4,15 +4,18 @@ import UniformTypeIdentifiers
 
 struct Step4DetailsView: View {
     @Bindable var state: NewTransactionState
+    let onBack: () -> Void
     let onSave: () -> Void
 
     @Query private var accounts: [Account]
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @Query private var costCenters: [CostCenter]
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
 
-    @State private var showAmountEditor   = false
-    @State private var showCategoryPicker = false
-    @State private var showReceiptCamera = false
-    @State private var showReceiptLibrary = false
+    @State private var showAmountEditor    = false
+    @State private var showCategoryPicker  = false
+    @State private var showProjectPicker   = false
+    @State private var showReceiptCamera   = false
+    @State private var showReceiptLibrary  = false
     @State private var showReceiptPDFPicker = false
     @State private var previewURL: URL?
 
@@ -36,6 +39,10 @@ struct Step4DetailsView: View {
                 // ── Seção 2: Categoria ─────────────────────────────────────
                 formCard {
                     categoryRow
+                    if !costCenters.filter(\.isActive).isEmpty {
+                        Divider().padding(.leading, 56)
+                        projectRow
+                    }
                 }
 
                 // ── Seção 3: Conta & Detalhes ──────────────────────────────
@@ -49,13 +56,15 @@ struct Step4DetailsView: View {
                         Divider().padding(.leading, 56)
                         installmentRow
                     }
-                    if state.recurrenceType == .monthly {
+                    if state.recurrenceType == .monthly || state.recurrenceType == .annual {
                         Divider().padding(.leading, 56)
                         HStack(spacing: 8) {
                             Image(systemName: "info.circle")
                                 .foregroundStyle(.secondary)
                                 .frame(width: 32)
-                            Text(t("newTx.installmentsNote"))
+                            Text(state.recurrenceType == .annual
+                                 ? t("newTx.annualNote")
+                                 : t("newTx.installmentsNote"))
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -116,15 +125,29 @@ struct Step4DetailsView: View {
                     }
                 }
 
-                // ── Botão Salvar ───────────────────────────────────────────
-                Button(action: onSave) {
-                    Label(t("transaction.save"), systemImage: "checkmark.circle.fill")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.accentColor)
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                // ── Navegação final ────────────────────────────────────────
+                HStack(spacing: 12) {
+                    Button(action: onBack) {
+                        Text(t("common.back"))
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color(.secondarySystemBackground))
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(action: onSave) {
+                        Label(t("transaction.save"), systemImage: "checkmark.circle.fill")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.accentColor)
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    .buttonStyle(.plain)
                 }
                 .padding(.top, 4)
             }
@@ -262,11 +285,11 @@ struct Step4DetailsView: View {
                             .background(Color(hex: cat.color).opacity(0.15))
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                         VStack(alignment: .trailing, spacing: 1) {
-                            Text(cat.name)
+                            Text(cat.displayName)
                                 .font(.body)
                                 .foregroundStyle(.primary)
                             if let sub = state.subcategory {
-                                Text(sub.name)
+                                Text(sub.displayName)
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
@@ -284,6 +307,47 @@ struct Step4DetailsView: View {
         }
         .buttonStyle(.plain)
         .disabled(state.type == .transfer)
+    }
+
+    // MARK: - Project Row
+
+    private var projectRow: some View {
+        Button { showProjectPicker = true } label: {
+            DetailRow(
+                icon: state.costCenter?.icon ?? "folder",
+                label: t("projects.section"),
+                labelFont: .body.weight(.medium),
+                contentFont: .body
+            ) {
+                HStack(spacing: 6) {
+                    if let cc = state.costCenter {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color(hex: cc.color).opacity(0.15))
+                                .frame(width: 22, height: 22)
+                            Image(systemName: cc.icon)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Color(hex: cc.color))
+                        }
+                        Text(cc.name)
+                            .font(.body)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                    } else {
+                        Text(t("projects.noProject"))
+                            .font(.body)
+                            .foregroundStyle(.secondary)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.footnote)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showProjectPicker) {
+            ProjectPickerSheet(selectedCostCenter: $state.costCenter)
+        }
     }
 
     // MARK: - Seção Detalhes
@@ -533,7 +597,7 @@ struct CategoryPickerSheet: View {
 
                             LazyVGrid(columns: columns, spacing: 12) {
                                 ForEach(
-                                    expanded.subcategories.sorted { $0.sortOrder < $1.sortOrder }
+                                    (expanded.subcategories ?? []).sorted { $0.sortOrder < $1.sortOrder }
                                 ) { sub in
                                     CategoryGridItem(
                                         category: sub,

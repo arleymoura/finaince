@@ -8,9 +8,13 @@ struct DashboardView: View {
     @Query(sort: \Account.createdAt) private var accounts: [Account]
     @Query(sort: \Category.sortOrder) private var categories: [Category]
     @Query private var goals: [Goal]
+    @Query private var costCenters: [CostCenter]
+    @Query private var allCostCenterFiles: [CostCenterFile]
     @Query private var aiSettings: [AISettings]
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
     @AppStorage("user.name") private var userName = ""
+    @AppStorage("user.adultsCount") private var adultsCount = 0
+    @AppStorage("user.childrenCount") private var childrenCount = 0
 
     
     @State private var selectedMonth      = Calendar.current.component(.month, from: Date())
@@ -18,14 +22,30 @@ struct DashboardView: View {
     @State private var selectedAccountId: UUID? = nil
     @State private var drilldownCategory: Category?
     @State private var showGoalForm    = false
+    @State private var showNewProjectForm = false
+    @State private var selectedProject: CostCenter? = nil
     @State private var showAISetup = false
     @State private var showCategoryDetails = false
     @State private var selectedCalendarDay: SelectedCalendarDay?
     @State private var transactionToEdit: Transaction?
-    @State private var chatNavigationManager = ChatNavigationManager.shared
-    @State private var selectedDashboardMonth: Date? = nil
+    @State private var selectedInsightForAnalysis: Insight?
+    @State private var insightAnalysisSharePayload: DashboardInsightAnalysisSharePayload?
+    @State private var isGeneratingInsightAnalysis = false
     @State private var deepLinkManager = DeepLinkManager.shared
+    @State private var chatNavigationManager = ChatNavigationManager.shared
     @State private var helpTip: HelpTipItem? = nil
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    private var isRegular: Bool { sizeClass == .regular }
+
+    /// On iPad inside NavigationSplitView, the GeometryReader proxy.safeAreaInsets.top
+    /// is inflated by the NavigationStack's navigation bar area. Read the real
+    /// window-level top inset directly from UIKit instead.
+    private var windowTopInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first(where: { $0.activationState == .foregroundActive })?.keyWindow?
+            .safeAreaInsets.top ?? 54
+    }
     // Empty-state missions
     @State private var showNewTransactionEmpty  = false
     @State private var showReceiptScannerEmpty  = false
@@ -48,10 +68,12 @@ struct DashboardView: View {
     var totalPending: Double { cachedMonthTx.filter { !$0.isPaid }.reduce(0) { $0 + $1.amount } }
 
     var pendingTransactions: [Transaction] { cachedPendingAll }
-    var activeGoals: [Goal] { goals.filter { $0.isActive } }
+    var activeGoals: [Goal]       { goals.filter { $0.isActive } }
+    var activeProjects: [CostCenter] { costCenters.filter { $0.isActive } }
+    var activeAISettings: AISettings? { aiSettings.first(where: { $0.isConfigured }) }
 
     var isAIConfigured: Bool {
-        guard let settings = aiSettings.first else { return false }
+        guard let settings = activeAISettings else { return false }
         // Provedores sem API key (ex: Apple Intelligence): basta o usuário ter
         // passado pelo Setup e escolhido o provedor — o card deve sumir.
         // Se o device não suportar, o ChatView trata com mensagem específica.
@@ -147,32 +169,63 @@ struct DashboardView: View {
         NavigationStack {
             GeometryReader { proxy in
                 ZStack(alignment: .top) {
-                    Color(.systemGroupedBackground)
+                    dashboardWorkspaceBackground
                         .ignoresSafeArea()
 
-                    ScrollView {
+                    if isRegular {
+                        // ── iPad: fixed header + scrollable content ──────────
+                        // windowTopInset bypasses NavigationStack's inflated safe area value.
                         if !transactions.contains(where: { $0.amount > 0 }) {
-                            dashboardEmptyState(topInset: proxy.safeAreaInsets.top)
-                        } else {
-                            VStack(spacing: 12) {
-                                heroHeader(topInset: proxy.safeAreaInsets.top)
-                                accountFilterBar
-                                VStack(spacing: 20) {
-                                    insightsSection
-                                    aiSetupCard
-                                    calendarSection
-                                    goalsSection
-                                    monthEvolutionChartCard
-                                    chartSection
-                                    dashboardHistorySection
-                                }
-                                .padding(.horizontal)
+                            ScrollView {
+                                dashboardEmptyState(topInset: windowTopInset)
                             }
-                            .padding(.bottom, 32)
+                            .ignoresSafeArea(edges: .top)
+                            .refreshable { refreshDashboardData() }
+                        } else {
+                            VStack(spacing: 0) {
+                                heroHeader(topInset: windowTopInset)
+                                accountFilterBar
+                                    .frame(maxWidth: 1100)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.top, 12)
+                                    .padding(.bottom, 4)
+                                ScrollView {
+                                    iPadContentGrid
+                                        .padding(.bottom, 32)
+                                }
+                                .refreshable { refreshDashboardData() }
+                            }
+                            .ignoresSafeArea(edges: .top)
+                        }
+                    } else {
+                        // ── iPhone: fixed header + pinned filter bar + scrollable content ──
+                        if !transactions.contains(where: { $0.amount > 0 }) {
+                            ScrollView {
+                                dashboardEmptyState(topInset: proxy.safeAreaInsets.top)
+                            }
+                            .ignoresSafeArea(edges: .top)
+                            .refreshable { refreshDashboardData() }
+                        } else {
+                            VStack(spacing: -15) {
+                                heroHeader(topInset: proxy.safeAreaInsets.top)
+                                    .ignoresSafeArea(edges: .top)
+
+                                VStack(spacing: 0) {
+                                    accountFilterBar
+                                        .background(dashboardWorkspaceBackground)
+
+                                    Divider()
+
+                                    ScrollView {
+                                        iPhoneContentStack
+                                            .padding(.bottom, 32)
+                                    }
+                                    .refreshable { refreshDashboardData() }
+                                }
+                                .padding(.top, -44)
+                            }
                         }
                     }
-                    .ignoresSafeArea(edges: .top)
-                    .refreshable { refreshDashboardData() }
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -210,6 +263,12 @@ struct DashboardView: View {
             .sheet(isPresented: $showGoalForm) {
                 GoalFormView()
             }
+            .sheet(isPresented: $showNewProjectForm) {
+                NavigationStack { ProjectFormView() }
+            }
+            .sheet(item: $selectedProject) { project in
+                NavigationStack { ProjectDetailView(project: project) }
+            }
             .sheet(isPresented: $showAISetup) {
                 NavigationStack {
                     AIProviderSettingsView()
@@ -220,6 +279,35 @@ struct DashboardView: View {
                             }
                         }
                 }
+            }
+            .sheet(item: $selectedInsightForAnalysis) { selectedInsightForAnalysis in
+                NavigationStack {
+                    DashboardInsightAnalysisEducationDialog(
+                        insight: selectedInsightForAnalysis,
+                        onCancel: {
+                            self.selectedInsightForAnalysis = nil
+                        },
+                        onContinue: {
+                            let insightToShare = selectedInsightForAnalysis
+                            isGeneratingInsightAnalysis = true
+                            self.selectedInsightForAnalysis = nil
+
+                            DispatchQueue.main.async {
+                                shareInsightAnalysis(insightToShare)
+                                isGeneratingInsightAnalysis = false
+                            }
+                        }
+                    )
+                }
+                .presentationDetents([.fraction(0.72), .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(24)
+                .presentationBackground(.clear)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(.hidden, for: .navigationBar)
+            }
+            .sheet(item: $insightAnalysisSharePayload) { payload in
+                DashboardInsightAnalysisShareSheet(payload: payload)
             }
             .sheet(item: $transactionToEdit) { transaction in
                 TransactionEditView(transaction: transaction)
@@ -239,6 +327,26 @@ struct DashboardView: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .presentationBackground(Color(.systemBackground))
+            }
+            .overlay {
+                if isGeneratingInsightAnalysis {
+                    ZStack {
+                        Color.black.opacity(0.2)
+                            .ignoresSafeArea()
+
+                        VStack(spacing: 12) {
+                            ProgressView()
+                                .scaleEffect(1.2)
+
+                            Text(t("dashboard.generatingInsightAnalysis"))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(20)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                    }
+                }
             }
             .helpTipOverlay(item: $helpTip)
         }
@@ -524,15 +632,65 @@ struct DashboardView: View {
 
     @ViewBuilder
     private var insightsSection: some View {
-        if isAIConfigured && !cachedInsights.isEmpty {
-            InsightCarousel(insights: cachedInsights) { insight in
-                chatNavigationManager.openChat(
-                    prompt: insight.chatPrompt,
-                    deepAnalysisFocus: insight.title,
-                    shouldOfferDeepAnalysis: true,
-                    startNewChat: true
-                )
+        if !cachedInsights.isEmpty {
+            InsightCarousel(
+                insights: cachedInsights,
+                badgeTitle: t("dashboard.quickAnalysisTitle"),
+                ctaTitle: t(isAIConfigured ? "dashboard.viewMoreDetails" : "dashboard.viewWithAI")
+            ) { insight in
+                handleInsightTap(insight)
             }
+        }
+    }
+
+    private func handleInsightTap(_ insight: Insight) {
+        if isAIConfigured {
+            chatNavigationManager.openChat(
+                prompt: insight.chatPrompt,
+                deepAnalysisFocus: insight.title,
+                shouldOfferDeepAnalysis: true,
+                startNewChat: true
+            )
+        } else {
+            selectedInsightForAnalysis = insight
+        }
+    }
+
+    private func shareInsightAnalysis(_ insight: Insight) {
+        let analysisTransactions: [Transaction]
+        let analysisAccounts: [Account]
+
+        if let selectedAccountId {
+            analysisTransactions = transactions.filter { $0.account?.id == selectedAccountId }
+            analysisAccounts = accounts.filter { $0.id == selectedAccountId }
+        } else {
+            analysisTransactions = transactions
+            analysisAccounts = accounts
+        }
+
+        let analysisGoal = t("dashboard.insightAnalysisGoalTemplate", insight.title, insight.body)
+        let fullText = FinancialAnalysisExporter.buildAnalysisText(
+            transactions: analysisTransactions,
+            accounts: analysisAccounts,
+            goals: goals,
+            selectedMonth: selectedMonth,
+            selectedYear: selectedYear,
+            adults: adultsCount,
+            children: childrenCount,
+            currencyCode: currencyCode,
+            analysisGoal: analysisGoal
+        )
+        UIPasteboard.general.string = fullText
+
+        do {
+            let fileURL = try FinancialAnalysisExporter.writeAnalysisFile(
+                text: fullText,
+                selectedMonth: selectedMonth,
+                selectedYear: selectedYear
+            )
+            insightAnalysisSharePayload = DashboardInsightAnalysisSharePayload(fileURL: fileURL)
+        } catch {
+            print("Failed to write insight analysis file: \(error)")
         }
     }
 
@@ -595,6 +753,18 @@ struct DashboardView: View {
     // MARK: - Hero Header
 
     private func heroHeader(topInset: CGFloat) -> some View {
+        if isRegular {
+            return AnyView(iPadHeroHeader(topInset: topInset))
+        }
+
+        return AnyView(compactHeroHeader(topInset: topInset))
+    }
+
+    private func compactHeroHeader(topInset: CGFloat) -> some View {
+        // Content VStack is the size anchor — gradient is a .background so it
+        // never inflates layout height (avoids the ZStack expansion bug on iPad).
+        // The parent container (.ignoresSafeArea(edges:.top)) already places this
+        // view at y=0 so the gradient bleeds behind the status bar naturally.
         VStack(spacing: 0) {
 
             // Month navigator
@@ -724,25 +894,136 @@ struct DashboardView: View {
                 Spacer().frame(height: 4)
             }
         }
-        .background(
+        // Cap width on iPad so text doesn't spread too wide; full-bleed via frame below.
+        .frame(maxWidth: isRegular ? 700 : .infinity)
+        .frame(maxWidth: .infinity)
+        // Gradient as background — never affects layout height.
+        .background {
             LinearGradient(
-                colors: [
-                    Color.accentColor.opacity(0.95),
-                    Color.accentColor.opacity(0.65)
-                ],
+                colors: [Color.accentColor.opacity(0.95), Color.accentColor.opacity(0.65)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
-        )
+        }
         .clipShape(
-            UnevenRoundedRectangle(
-                cornerRadii: .init(
-                    bottomLeading: 24,
-                    bottomTrailing: 24
-                )
-            )
+            UnevenRoundedRectangle(cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24))
         )
         .shadow(color: Color.accentColor.opacity(0.24), radius: 12, x: 0, y: 6)
+    }
+
+    private func iPadHeroHeader(topInset: CGFloat) -> some View {
+        VStack(spacing: 18) {
+            HStack(alignment: .top, spacing: 18) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(userName.isEmpty ? t("dashboard.title") : "Ola, \(userName)")
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+
+                    Text("Sua visao financeira de \(monthTitle.lowercased())")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.78))
+                }
+
+                Spacer(minLength: 16)
+
+                HStack(spacing: 12) {
+                    monthNavigationButton(systemName: "chevron.left") {
+                        moveMonth(by: -1)
+                    }
+
+                    Text(monthTitle)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.95))
+                        .padding(.horizontal, 14)
+                        .frame(height: 38)
+                        .background(.white.opacity(0.12))
+                        .clipShape(Capsule())
+
+                    monthNavigationButton(systemName: "chevron.right") {
+                        moveMonth(by: 1)
+                    }
+                }
+            }
+
+            HStack(spacing: 14) {
+                heroMetricCard(
+                    title: t("dashboard.spent"),
+                    value: totalPaid.asCurrency(currencyCode),
+                    icon: "creditcard.fill",
+                    tint: .white
+                )
+                heroMetricCard(
+                    title: t("dashboard.forecast"),
+                    value: totalForecast.asCurrency(currencyCode),
+                    icon: "calendar.badge.clock",
+                    tint: Color.orange.opacity(0.95)
+                )
+                heroMetricCard(
+                    title: t("dashboard.pending"),
+                    value: totalPending.asCurrency(currencyCode),
+                    icon: "clock.fill",
+                    tint: Color.purple.opacity(0.95)
+                )
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, topInset + 16)
+        .padding(.bottom, 24)
+        .frame(maxWidth: 1100)
+        .frame(maxWidth: .infinity)
+        .background {
+            LinearGradient(
+                colors: [Color.accentColor.opacity(0.95), Color.accentColor.opacity(0.68)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+        .clipShape(
+            UnevenRoundedRectangle(cornerRadii: .init(bottomLeading: 28, bottomTrailing: 28))
+        )
+        .shadow(color: Color.accentColor.opacity(0.20), radius: 14, x: 0, y: 8)
+    }
+
+    private func monthNavigationButton(systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.subheadline.bold())
+                .foregroundStyle(.white.opacity(0.9))
+                .frame(width: 38, height: 38)
+                .background(.white.opacity(0.12))
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func heroMetricCard(title: String, value: String, icon: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(tint)
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .textCase(.uppercase)
+                    .tracking(0.7)
+            }
+
+            Text(value)
+                .font(.system(size: 26, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(.white.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+        )
     }
 
     private func heroStatItem(
@@ -791,8 +1072,18 @@ struct DashboardView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 2)
+            .padding(.vertical, 6)
         }
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(isRegular ? Color(.systemBackground) : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(isRegular ? Color.primary.opacity(0.05) : Color.clear, lineWidth: 1)
+        )
+        .shadow(color: isRegular ? Color.black.opacity(0.05) : .clear, radius: 14, y: 8)
+        .padding(.horizontal, isRegular ? 24 : 0)
     }
 
     private func accountPill(_ id: UUID?, label: String, color: String?) -> some View {
@@ -1010,19 +1301,15 @@ struct DashboardView: View {
     }
 
     private func refreshInsightsCache() {
-        if isAIConfigured {
-            cachedInsights = InsightEngine.compute(
-                transactions: transactions,
-                accounts: accounts,
-                goals: goals,
-                month: selectedMonth,
-                year: selectedYear,
-                currencyCode: currencyCode,
-                selectedAccountId: selectedAccountId
-            )
-        } else {
-            cachedInsights = []
-        }
+        cachedInsights = InsightEngine.compute(
+            transactions: transactions,
+            accounts: accounts,
+            goals: goals,
+            month: selectedMonth,
+            year: selectedYear,
+            currencyCode: currencyCode,
+            selectedAccountId: selectedAccountId
+        )
     }
 
     private func refreshCache() {
@@ -1073,6 +1360,56 @@ struct DashboardView: View {
             let c = cal.dateComponents([.month, .year], from: date)
             selectedMonth = c.month!; selectedYear = c.year!
         }
+    }
+
+    // MARK: - Layout: iPhone vs iPad
+
+    /// Single-column layout for iPhone (and compact size class).
+    private var iPhoneContentStack: some View {
+        VStack(spacing: 20) {
+            insightsSection
+            aiSetupCard
+            calendarSection
+            goalsSection
+            monthEvolutionChartCard
+            chartSection
+            projectsSection
+        }
+        .padding(.horizontal)
+    }
+
+    /// Two-column layout for iPad (regular horizontal size class).
+    ///
+    /// Uses VStack + HStack instead of LazyVGrid to guarantee correct
+    /// full-width vs. side-by-side behaviour for @ViewBuilder sections.
+    /// Content is centered and capped at 1100pt so it doesn't over-stretch
+    /// on large iPad Pro screens.
+    private var iPadContentGrid: some View {
+        VStack(spacing: 20) {
+            HStack(alignment: .top, spacing: 20) {
+                VStack(spacing: 20) {
+                    insightsSection
+                    aiSetupCard
+                    calendarSection
+                }
+                    .frame(maxWidth: .infinity)
+
+                VStack(spacing: 20) {
+                    goalsSection
+                    projectsSection
+                    chartSection
+                }
+                    .frame(maxWidth: .infinity)
+            }
+
+            monthEvolutionChartCard
+            SpendingHistoryCard(transactions: transactions)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 6)
+        // Cap width on very large iPads so cards don't over-stretch
+        .frame(maxWidth: 1100)
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Goals
@@ -1132,8 +1469,13 @@ struct DashboardView: View {
                 }
             }
         }
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .background(isRegular ? Color(.systemBackground) : Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: isRegular ? 20 : 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: isRegular ? 20 : 16)
+                .strokeBorder(Color.primary.opacity(isRegular ? 0.05 : 0.03), lineWidth: 1)
+        )
+        .shadow(color: isRegular ? Color.black.opacity(0.05) : .clear, radius: 18, y: 10)
     }
 
     private func compactGoalColumns(for count: Int) -> [GridItem] {
@@ -1190,6 +1532,106 @@ struct DashboardView: View {
         guard let catGoal = goal.category else { return true }
         let root = tx.category?.parent ?? tx.category
         return root?.id == catGoal.id
+    }
+
+    // MARK: - Projects
+
+    private var projectsSection: some View {
+        Group {
+            if activeProjects.isEmpty {
+                EmptyView()
+            } else {
+                VStack(spacing: 0) {
+                    // Header
+                    HStack(spacing: 8) {
+                        Image(systemName: "folder.fill")
+                            .font(.subheadline)
+                            .foregroundStyle(.orange)
+                        Text(t("dashboard.projects"))
+                            .font(.headline)
+                        Spacer()
+                        Button { showNewProjectForm = true } label: {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+
+                    Divider()
+
+                    if activeProjects.count <= 3 {
+                        // List layout: 1 project per line with more detail
+                        VStack(spacing: 0) {
+                            ForEach(activeProjects) { project in
+                                Button { selectedProject = project } label: {
+                                    DashboardProjectRow(
+                                        project: project,
+                                        spent: spentForProject(project),
+                                        txCount: txCount(for: project),
+                                        fileCount: fileCount(for: project),
+                                        currencyCode: currencyCode
+                                    )
+                                    .frame(maxWidth: .infinity)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                if project.id != activeProjects.last?.id {
+                                    Divider().padding(.leading, 68)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    } else {
+                        // Grid layout: compact cells for 4+ projects
+                        LazyVGrid(
+                            columns: Array(
+                                repeating: GridItem(.flexible(), spacing: 8),
+                                count: 3
+                            ),
+                            spacing: 8
+                        ) {
+                            ForEach(activeProjects.prefix(6)) { project in
+                                Button { selectedProject = project } label: {
+                                    DashboardProjectCell(
+                                        project: project,
+                                        spent: spentForProject(project),
+                                        txCount: txCount(for: project),
+                                        fileCount: fileCount(for: project),
+                                        currencyCode: currencyCode
+                                    )
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(12)
+                    }
+                }
+                .background(isRegular ? Color(.systemBackground) : Color(.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: isRegular ? 20 : 16))
+                .overlay(
+                    RoundedRectangle(cornerRadius: isRegular ? 20 : 16)
+                        .strokeBorder(Color.primary.opacity(isRegular ? 0.05 : 0.03), lineWidth: 1)
+                )
+                .shadow(color: isRegular ? Color.black.opacity(0.05) : .clear, radius: 18, y: 10)
+            }
+        }
+    }
+
+    private func spentForProject(_ project: CostCenter) -> Double {
+        transactions
+            .filter { $0.costCenterId == project.id && $0.type == .expense }
+            .reduce(0) { $0 + $1.amount }
+    }
+
+    private func txCount(for project: CostCenter) -> Int {
+        transactions.filter { $0.costCenterId == project.id }.count
+    }
+
+    private func fileCount(for project: CostCenter) -> Int {
+        allCostCenterFiles.filter { $0.costCenterId == project.id }.count
     }
 
     // MARK: - Account Blocks
@@ -1317,298 +1759,13 @@ struct DashboardView: View {
             .frame(height: 180)
         }
         .padding(16)
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-    }
-
-    // MARK: - Dashboard Monthly History
-
-    /// Pontos mensais: 3 meses anteriores + mês atual + 3 meses futuros (previsão).
-    fileprivate var dashboardMonthlyPoints: [DashboardMonthPoint] {
-        let calendar = Calendar.current
-        guard let currentStart = calendar.dateInterval(of: .month, for: Date())?.start else { return [] }
-
-        let expenses = transactions.filter { $0.type == .expense }
-
-        var points: [DashboardMonthPoint] = []
-        var realizedAmounts: [Double] = []
-
-        for offset in -3...3 {
-            guard let monthStart = calendar.date(byAdding: .month, value: offset, to: currentStart) else { continue }
-            let isFuture  = offset > 0
-            let isCurrent = offset == 0
-
-            if !isFuture {
-                let total = expenses
-                    .filter { calendar.isDate($0.date, equalTo: monthStart, toGranularity: .month) }
-                    .reduce(0.0) { $0 + $1.amount }
-                if total > 0 || isCurrent {
-                    points.append(DashboardMonthPoint(
-                        date: monthStart, amount: total,
-                        isForecast: false, isCurrent: isCurrent
-                    ))
-                    if !isCurrent && total > 0 { realizedAmounts.append(total) }
-                }
-            } else {
-                guard !realizedAmounts.isEmpty else { continue }
-                let avg = realizedAmounts.reduce(0, +) / Double(realizedAmounts.count)
-                points.append(DashboardMonthPoint(
-                    date: monthStart, amount: avg,
-                    isForecast: true, isCurrent: false
-                ))
-            }
-        }
-        return points
-    }
-
-    @ViewBuilder
-    private var dashboardHistorySection: some View {
-        let points = dashboardMonthlyPoints
-        if points.count >= 2 {
-            dashboardHistoryCard(points: points)
-        }
-    }
-
-    private func dashboardHistoryCard(points: [DashboardMonthPoint]) -> some View {
-        let historical    = points.filter { !$0.isForecast }
-        let forecast      = points.filter { $0.isCurrent || $0.isForecast }
-        let current       = points.first  { $0.isCurrent }
-        let previous      = points.last   { !$0.isForecast && !$0.isCurrent }
-        let selectedPoint = dashboardSelectedPoint(in: points) ?? current
-
-        let amounts  = points.map(\.amount)
-        let padding  = (amounts.max() ?? 1) * 0.18
-        let yMin     = max(0, (amounts.min() ?? 0) - padding)
-        let yMax     = (amounts.max() ?? 1) + padding * 3.2
-
-        let delta: Double? = {
-            guard let c = current, let p = previous, p.amount > 0 else { return nil }
-            return (c.amount - p.amount) / p.amount * 100
-        }()
-
-        return VStack(alignment: .leading, spacing: 0) {
-            // ── Card header ──────────────────────────────────────────────
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(t("dashboard.spendingHistory"))
-                        .font(.headline)
-                    if let delta {
-                        let sign: String  = delta >= 0 ? "+" : ""
-                        let color: Color  = delta > 2 ? .red : delta < -2 ? .green : .secondary
-                        Text(t("dashboard.vsPreviousMonthValue", "\(sign)\(String(format: "%.0f", delta))"))
-                            .font(.caption)
-                            .foregroundStyle(color)
-                    } else {
-                        Text(t("dashboard.lastMonthsForecast"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                HStack(spacing: 10) {
-                    dashboardLegendItem(color: .green,  dashed: false, label: t("dashboard.done"))
-                    dashboardLegendItem(color: .orange, dashed: true,  label: t("dashboard.forecast"))
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-
-            Divider()
-
-            // ── Card body ────────────────────────────────────────────────
-            VStack(alignment: .leading, spacing: 14) {
-
-            Chart {
-                // Área sob histórico
-                ForEach(historical) { point in
-                    AreaMark(
-                        x: .value("Mês", point.date),
-                        yStart: .value("Base",  yMin),
-                        yEnd:   .value("Valor", point.amount)
-                    )
-                    .interpolationMethod(.catmullRom)
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [Color.accentColor.opacity(0.12), Color.accentColor.opacity(0.0)],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                    )
-                }
-
-                // Linha histórica — sólida, azul
-                ForEach(historical) { point in
-                    LineMark(
-                        x: .value("Mês", point.date),
-                        y: .value("Valor", point.amount)
-                    )
-                    .interpolationMethod(.catmullRom)
-                    .foregroundStyle(Color.accentColor)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                }
-
-                // Linha previsão — pontilhada, azul suave
-                ForEach(forecast) { point in
-                    LineMark(
-                        x: .value("Mês", point.date),
-                        y: .value("Valor", point.amount)
-                    )
-                    .interpolationMethod(.catmullRom)
-                    .foregroundStyle(Color.accentColor.opacity(0.5))
-                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round, dash: [5, 5]))
-                }
-
-                // Pontos — verde realizado, laranja previsão
-                ForEach(points) { point in
-                    PointMark(
-                        x: .value("Mês", point.date),
-                        y: .value("Valor", point.amount)
-                    )
-                    .symbolSize(point.isCurrent ? 60 : 36)
-                    .foregroundStyle(point.isForecast && !point.isCurrent ? Color.orange : Color.green)
-                }
-
-                // Ponto selecionado + tooltip
-                if let sel = selectedPoint {
-                    PointMark(
-                        x: .value("Mês",   sel.date),
-                        y: .value("Valor", sel.amount)
-                    )
-                    .symbolSize(140)
-                    .foregroundStyle(sel.isForecast && !sel.isCurrent ? Color.orange : Color.green)
-                    .annotation(
-                        position: dashboardAnnotationPosition(for: sel, in: points),
-                        alignment: .center
-                    ) {
-                        dashboardTooltip(for: sel)
-                    }
-                }
-            }
-            .frame(height: 160)
-            .chartYScale(domain: yMin...yMax)
-            .chartYAxis(.hidden)
-            .chartXScale(range: .plotDimension(padding: 20))
-            .chartXAxis {
-                AxisMarks(values: points.map(\.date)) { value in
-                    AxisValueLabel {
-                        if let date = value.as(Date.self) {
-                            let isCur = points.first(where: {
-                                Calendar.current.isDate($0.date, equalTo: date, toGranularity: .month)
-                            })?.isCurrent == true
-                            Text(dashboardMonthLabel(date))
-                                .font(.caption2.weight(isCur ? .bold : .regular))
-                                .foregroundStyle(isCur ? Color.primary : Color.secondary)
-                        }
-                    }
-                }
-            }
-            .chartOverlay { proxy in
-                GeometryReader { geometry in
-                    Rectangle()
-                        .fill(Color.clear)
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 0)
-                                .onChanged { value in
-                                    selectNearestDashboardPoint(
-                                        to: value.location,
-                                        proxy: proxy,
-                                        geometry: geometry,
-                                        points: points
-                                    )
-                                }
-                        )
-                }
-            }
-            }   // end VStack body
-            .padding(16)
-        }
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-    }
-
-    // MARK: - Dashboard chart helpers
-
-    @ViewBuilder
-    private func dashboardTooltip(for point: DashboardMonthPoint) -> some View {
-        VStack(spacing: 2) {
-            Text(dashboardMonthLabel(point.date, wide: true))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text(point.amount.asCurrency(currencyCode))
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(point.isForecast && !point.isCurrent ? Color.orange : Color.primary)
-            if point.isForecast && !point.isCurrent {
-                Text(t("transaction.forecastLowercase"))
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 10))
-        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
-    }
-
-    @ViewBuilder
-    private func dashboardLegendItem(color: Color, dashed: Bool, label: String) -> some View {
-        HStack(spacing: 4) {
-            if dashed {
-                HStack(spacing: 2) {
-                    ForEach(0..<3, id: \.self) { _ in
-                        RoundedRectangle(cornerRadius: 0.5)
-                            .fill(color)
-                            .frame(width: 4, height: 2)
-                    }
-                }
-            } else {
-                Capsule()
-                    .fill(color)
-                    .frame(width: 14, height: 2)
-            }
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func dashboardAnnotationPosition(
-        for point: DashboardMonthPoint,
-        in points: [DashboardMonthPoint]
-    ) -> AnnotationPosition {
-        guard let idx = points.firstIndex(where: { $0.id == point.id }) else { return .top }
-        if idx == 0                { return .topTrailing }
-        if idx == points.count - 1 { return .topLeading }
-        return .top
-    }
-
-    private func dashboardSelectedPoint(in points: [DashboardMonthPoint]) -> DashboardMonthPoint? {
-        guard let sel = selectedDashboardMonth else { return nil }
-        return points.first {
-            Calendar.current.isDate($0.date, equalTo: sel, toGranularity: .month)
-        }
-    }
-
-    private func selectNearestDashboardPoint(
-        to location: CGPoint,
-        proxy: ChartProxy,
-        geometry: GeometryProxy,
-        points: [DashboardMonthPoint]
-    ) {
-        guard let plotFrameAnchor = proxy.plotFrame else { return }
-        let plotFrame = geometry[plotFrameAnchor]
-        guard plotFrame.contains(location) else { return }
-        let xPosition = location.x - plotFrame.origin.x
-        guard let tappedDate: Date = proxy.value(atX: xPosition) else { return }
-        selectedDashboardMonth = points.min {
-            abs($0.date.timeIntervalSince(tappedDate)) < abs($1.date.timeIntervalSince(tappedDate))
-        }?.date
-    }
-
-    private func dashboardMonthLabel(_ date: Date, wide: Bool = false) -> String {
-        let f = DateFormatter()
-        f.locale = Locale.current
-        f.dateFormat = wide ? "LLLL yyyy" : "LLL"
-        return f.string(from: date).capitalized
+        .background(isRegular ? Color(.systemBackground) : Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: isRegular ? 20 : 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: isRegular ? 20 : 16)
+                .strokeBorder(Color.primary.opacity(isRegular ? 0.05 : 0.03), lineWidth: 1)
+        )
+        .shadow(color: isRegular ? Color.black.opacity(0.05) : .clear, radius: 18, y: 10)
     }
 
     // MARK: - Accounts
@@ -1779,7 +1936,7 @@ struct DashboardView: View {
                                 Circle()
                                     .fill(Color(hex: item.category.color))
                                     .frame(width: 8, height: 8)
-                                Text(item.category.name)
+                                Text(item.category.displayName)
                                     .font(.caption)
                                     .lineLimit(1)
                                 Spacer()
@@ -1800,8 +1957,13 @@ struct DashboardView: View {
             }   // end VStack body
             .padding(16)
         }
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .background(isRegular ? Color(.systemBackground) : Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: isRegular ? 20 : 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: isRegular ? 20 : 16)
+                .strokeBorder(Color.primary.opacity(isRegular ? 0.05 : 0.03), lineWidth: 1)
+        )
+        .shadow(color: isRegular ? Color.black.opacity(0.05) : .clear, radius: 18, y: 10)
         .contentShape(Rectangle())
         .onTapGesture {
             guard !expensesByCategory.isEmpty else { return }
@@ -1809,14 +1971,23 @@ struct DashboardView: View {
         }
     }
 
-}
+    private var dashboardWorkspaceBackground: some View {
+        Group {
+            if isRegular {
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.96, green: 0.97, blue: 0.99),
+                        Color(red: 0.94, green: 0.95, blue: 0.97)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            } else {
+                Color(.systemGroupedBackground)
+            }
+        }
+    }
 
-fileprivate struct DashboardMonthPoint: Identifiable {
-    let id        = UUID()
-    let date:       Date
-    let amount:     Double
-    let isForecast: Bool
-    let isCurrent:  Bool
 }
 
 private struct DashboardCumulativePoint: Identifiable {
@@ -1871,7 +2042,7 @@ private struct UpcomingExpenseRow: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(transaction.placeName ?? transaction.category?.name ?? "Despesa pendente")
+                Text(transaction.placeName ?? transaction.category?.displayName ?? t("dashboard.pending"))
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
@@ -1898,7 +2069,7 @@ private struct PendingDayTransactionsSheet: View {
     let transactions: [Transaction]
 
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
     @State private var transactionToEdit: Transaction?
 
     private var title: String {
@@ -2249,7 +2420,7 @@ struct CategoryRowView: View {
     let category: Category
     let amount: Double
     let total: Double
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
 
     var percentage: Double { total > 0 ? amount / total : 0 }
 
@@ -2266,7 +2437,7 @@ struct CategoryRowView: View {
 
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text(category.name)
+                    Text(category.displayName)
                         .font(.headline)
                         .foregroundStyle(.primary)
                     Spacer()
@@ -2340,4 +2511,270 @@ struct MonthSelectorView: View {
             month = c.month!; year = c.year!
         }
     }
+}
+
+private struct DashboardInsightAnalysisSharePayload: Identifiable {
+    let id = UUID()
+    let fileURL: URL
+}
+
+private struct DashboardInsightAnalysisEducationDialog: View {
+    let insight: Insight
+    let onCancel: () -> Void
+    let onContinue: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                VStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(.white.opacity(0.14))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .stroke(.white.opacity(0.18), lineWidth: 1)
+                            )
+                            .frame(width: 58, height: 58)
+                        Image(systemName: insight.icon)
+                            .font(.title2.weight(.semibold))
+                            .foregroundStyle(.white)
+                    }
+
+                    Text(t("dashboard.insightAnalysisSheetTitle"))
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+
+                    Text(t("dashboard.insightAnalysisSheetSubtitle"))
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.88))
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 22)
+                .frame(maxWidth: .infinity)
+                .background(
+                    LinearGradient(
+                        colors: [Color.accentColor, insight.color.opacity(0.9)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+                VStack(spacing: 20) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(t("dashboard.quickAnalysisTitle"))
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .textCase(.uppercase)
+                            .tracking(0.5)
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(insight.title)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                            Text(insight.body)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(.secondarySystemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+
+                    VStack(spacing: 0) {
+                        dashboardInsightStepRow(icon: "doc.text.fill", text: t("dashboard.insightAnalysisStep1"))
+                        dashboardInsightStepConnector
+                        dashboardInsightStepRow(icon: "square.and.arrow.up.fill", text: t("dashboard.insightAnalysisStep2"))
+                        dashboardInsightStepConnector
+                        dashboardInsightStepRow(icon: "sparkles", text: t("dashboard.insightAnalysisStep3"))
+                    }
+                    .padding(.vertical, 4)
+
+                    VStack(spacing: 8) {
+                        Button(action: onContinue) {
+                            Text(t("dashboard.viewWithAI"))
+                                .font(.headline)
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(Color.accentColor)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+
+                        Button(action: onCancel) {
+                            Text(t("common.cancel"))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(20)
+            }
+        }
+        .background(Color(.systemBackground))
+    }
+
+    private func dashboardInsightStepRow(icon: String, text: String) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.1))
+                    .frame(width: 30, height: 30)
+                Image(systemName: icon)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+        }
+    }
+
+    private var dashboardInsightStepConnector: some View {
+        Rectangle()
+            .fill(Color.accentColor.opacity(0.15))
+            .frame(width: 1.5, height: 10)
+            .padding(.leading, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 20)
+    }
+}
+
+// MARK: - Dashboard Project Row (list layout, ≤3 projects)
+
+private struct DashboardProjectRow: View {
+    let project: CostCenter
+    let spent: Double
+    let txCount: Int
+    let fileCount: Int
+    let currencyCode: String
+
+    private var metaLabel: String {
+        var parts: [String] = []
+        if txCount > 0 { parts.append("\(txCount) transaç\(txCount == 1 ? "ão" : "ões")") }
+        if fileCount > 0 { parts.append("\(fileCount) arquivo\(fileCount == 1 ? "" : "s")") }
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 12) {
+                // Icon
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color(hex: project.color).opacity(0.15))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: project.icon)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(Color(hex: project.color))
+                }
+
+                // Name + meta
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(project.name)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    if !metaLabel.isEmpty {
+                        Text(metaLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                // Spent
+                Text(spent.asCurrency(currencyCode))
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+            }
+
+            // Budget progress bar — only when budget is set
+            if let budget = project.budget, budget > 0 {
+                ProgressView(value: project.budgetProgress(spent: spent))
+                    .tint(project.budgetStatus(spent: spent).color)
+                    .frame(height: 4)
+                    .padding(.leading, 56) // align under name
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+}
+
+// MARK: - Dashboard Project Cell (grid layout, >3 projects)
+
+private struct DashboardProjectCell: View {
+    let project: CostCenter
+    let spent: Double
+    let txCount: Int
+    let fileCount: Int
+    let currencyCode: String
+
+    private var metaLabel: String {
+        var parts: [String] = []
+        if txCount > 0 { parts.append("\(txCount) tx") }
+        if fileCount > 0 { parts.append("\(fileCount) arq") }
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color(hex: project.color).opacity(0.15))
+                    .frame(width: 44, height: 44)
+                Image(systemName: project.icon)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(Color(hex: project.color))
+            }
+
+            VStack(spacing: 2) {
+                Text(project.name)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                Text(spent.asCurrency(currencyCode))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if !metaLabel.isEmpty {
+                    Text(metaLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            if let budget = project.budget, budget > 0 {
+                ProgressView(value: project.budgetProgress(spent: spent))
+                    .tint(project.budgetStatus(spent: spent).color)
+                    .frame(height: 4)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .padding(.horizontal, 6)
+        .background(Color(.tertiarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct DashboardInsightAnalysisShareSheet: UIViewControllerRepresentable {
+    let payload: DashboardInsightAnalysisSharePayload
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(
+            activityItems: [payload.fileURL],
+            applicationActivities: nil
+        )
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

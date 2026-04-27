@@ -6,6 +6,8 @@ import Combine
 /// Single insight card displayed in the carousel.
 struct InsightCard: View {
     let insight: Insight
+    let badgeTitle: String
+    let ctaTitle: String
     let onTap: () -> Void
 
     var body: some View {
@@ -24,7 +26,7 @@ struct InsightCard: View {
                     }
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(t("ai.analysisTitle"))
+                        Text(badgeTitle)
                             .font(.caption2.bold())
                             .foregroundStyle(insight.color)
                             .textCase(.uppercase)
@@ -53,7 +55,7 @@ struct InsightCard: View {
                 HStack(spacing: 4) {
                     Image(systemName: "sparkles")
                         .font(.caption2.bold())
-                    Text(t("ai.askAI"))
+                    Text(ctaTitle)
                         .font(.caption.bold())
                 }
                 .padding(.horizontal, 10)
@@ -79,6 +81,8 @@ struct InsightCard: View {
 /// Horizontally-paging carousel with dot indicator and auto-advance.
 struct InsightCarousel: View {
     let insights: [Insight]
+    let badgeTitle: String
+    let ctaTitle: String
     let onTap: (Insight) -> Void
 
     @State private var currentIndex = 0
@@ -109,7 +113,13 @@ struct InsightCarousel: View {
                 // Paged cards
                 TabView(selection: $currentIndex) {
                     ForEach(Array(insights.enumerated()), id: \.offset) { idx, insight in
-                        InsightCard(insight: insight) { onTap(insight) }
+                        InsightCard(
+                            insight: insight,
+                            badgeTitle: badgeTitle,
+                            ctaTitle: ctaTitle
+                        ) {
+                            onTap(insight)
+                        }
                             .tag(idx)
                             .padding(.horizontal, 1)   // avoid clipping shadow
                     }

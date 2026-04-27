@@ -58,9 +58,17 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 
 @Observable final class LanguageManager {
     static let shared = LanguageManager()
+    private let languageDefaultsKey = "app.language"
+    private let cloudLanguageKey = "icloud.app.language.v2"
+    private let ubiquitousStore = NSUbiquitousKeyValueStore.default
+    private var ubiquitousObserver: NSObjectProtocol?
 
     var language: AppLanguage {
-        didSet { UserDefaults.standard.set(language.rawValue, forKey: "app.language") }
+        didSet {
+            UserDefaults.standard.set(language.rawValue, forKey: languageDefaultsKey)
+            ubiquitousStore.set(language.rawValue, forKey: cloudLanguageKey)
+            ubiquitousStore.synchronize()
+        }
     }
 
     /// Resolved language — never .system
@@ -69,28 +77,89 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     }
 
     private init() {
-        let storedRaw = UserDefaults.standard.string(forKey: "app.language")
+        ubiquitousStore.synchronize()
+
+        let storedRaw = UserDefaults.standard.string(forKey: languageDefaultsKey)
+        let cloudRaw = ubiquitousStore.string(forKey: cloudLanguageKey)
         let storedLanguage = storedRaw.flatMap(AppLanguage.init(rawValue:))
+        let cloudLanguage = cloudRaw.flatMap(AppLanguage.init(rawValue:))
+        let isConfiguredDevice = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
         let resolvedLanguage: AppLanguage
 
         if let storedLanguage, storedLanguage != .system {
             resolvedLanguage = storedLanguage
+        } else if isConfiguredDevice, let cloudLanguage, cloudLanguage != .system {
+            resolvedLanguage = cloudLanguage
         } else {
             resolvedLanguage = Self.preferredSupportedSystemLanguage()
-            UserDefaults.standard.set(resolvedLanguage.rawValue, forKey: "app.language")
         }
 
+        DebugLaunchLog.log("🌐 [Language] init local=\(storedRaw ?? "nil") cloud=\(cloudRaw ?? "nil") configured=\(isConfiguredDevice) resolved=\(resolvedLanguage.rawValue)")
+
+        UserDefaults.standard.set(resolvedLanguage.rawValue, forKey: languageDefaultsKey)
         self.language = resolvedLanguage
+
+        if cloudRaw == nil, isConfiguredDevice {
+            ubiquitousStore.set(resolvedLanguage.rawValue, forKey: cloudLanguageKey)
+            ubiquitousStore.synchronize()
+            DebugLaunchLog.log("🌐 [Language] seeded cloud language with \(resolvedLanguage.rawValue)")
+        }
+
+        ubiquitousObserver = NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: ubiquitousStore,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyCloudLanguageIfAvailable()
+        }
+    }
+
+    deinit {
+        if let ubiquitousObserver {
+            NotificationCenter.default.removeObserver(ubiquitousObserver)
+        }
     }
 
     private static func preferredSupportedSystemLanguage() -> AppLanguage {
-        let code = Locale.current.language.languageCode?.identifier ?? "en"
-        switch code {
+        for preferredIdentifier in Locale.preferredLanguages {
+            let normalized = preferredIdentifier.lowercased()
+            if normalized.hasPrefix("pt") { return .ptBR }
+            if normalized.hasPrefix("es") { return .es }
+            if normalized.hasPrefix("en") { return .en }
+        }
+
+        let fallbackCode = Locale.current.language.languageCode?.identifier ?? "en"
+        switch fallbackCode {
         case "pt": return .ptBR
         case "es": return .es
         case "en": return .en
         default:   return .en
         }
+    }
+
+    func syncFromCloud() {
+        ubiquitousStore.synchronize()
+        let cloudRaw = ubiquitousStore.string(forKey: cloudLanguageKey) ?? "nil"
+        let isConfiguredDevice = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
+        DebugLaunchLog.log("🌐 [Language] syncFromCloud current=\(language.rawValue) cloud=\(cloudRaw) configured=\(isConfiguredDevice)")
+        applyCloudLanguageIfAvailable()
+    }
+
+    private func applyCloudLanguageIfAvailable() {
+        let isConfiguredDevice = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
+        guard isConfiguredDevice else {
+            return
+        }
+
+        guard let cloudRaw = ubiquitousStore.string(forKey: cloudLanguageKey),
+              let cloudLanguage = AppLanguage(rawValue: cloudRaw),
+              cloudLanguage != .system,
+              cloudLanguage != language else {
+            return
+        }
+
+        DebugLaunchLog.log("🌐 [Language] applying cloud language \(cloudLanguage.rawValue) over \(language.rawValue)")
+        language = cloudLanguage
     }
 
     // MARK: Translation

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // MARK: - Column Map
@@ -18,10 +19,22 @@ enum CSVImportService {
 
     /// Linhas por lote no processamento chunked.
     static let chunkSize = 100
+    // OLE2 armazena nomes de streams em UTF-16LE — não em ASCII/UTF-8.
+    // "EncryptedPackage" em UTF-16LE: 45 00 6E 00 63 00 72 00 79 00 70 00 74 00 65 00 64 00 ...
+    private static let encryptedOOXMLMarkers: [Data] = [
+        "EncryptedPackage".data(using: .utf16LittleEndian) ?? Data(),
+        "EncryptionInfo".data(using: .utf16LittleEndian)   ?? Data(),
+    ]
+
+    static func passwordKey(for data: Data) -> String {
+        let digest = SHA256.hash(data: data)
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        return "import.file.password.\(hex)"
+    }
 
     // MARK: - Read file
 
-    static func readFile(from url: URL) throws -> [[String]] {
+    static func readFile(from url: URL, password: String? = nil) throws -> [[String]] {
         let didAccessSecurityScope = url.startAccessingSecurityScopedResource()
         defer {
             if didAccessSecurityScope {
@@ -42,7 +55,58 @@ enum CSVImportService {
 
         print("🗂 [Import] url=\(url.lastPathComponent) ext='\(ext)' size=\(data.count) magic=\(magic) isZIP=\(isZIP) isOLE2=\(isOLE2)")
 
-        if isOLE2 { throw ImportError.biff8NotSupported }
+        // OFX — detecta por extensão ou pelos marcadores textuais no conteúdo
+        if ext == "ofx" || isOFXContent(data) {
+            print("🗂 [Import] → OFX parser")
+            let rows = try parseOFX(from: data)
+            print("🗂 [Import] ✅ OFX parser returned \(rows.count) rows")
+            for (i, r) in rows.prefix(8).enumerated() {
+                print("🗂   row[\(i)] (\(r.count) cols): \(r.prefix(3).map { $0.isEmpty ? "∅" : String($0.prefix(30)) })")
+            }
+            return rows
+        }
+
+        if isOLE2, looksLikePasswordProtectedOOXML(data) {
+            print("🗂 [Import] 🔒 encrypted OOXML detected")
+            let filePasswordKey = passwordKey(for: data)
+
+            guard let password, !password.isEmpty else {
+                throw ImportError.passwordRequired(passwordKey: filePasswordKey, fileName: url.lastPathComponent)
+            }
+
+            do {
+                let rows = try ProtectedXLSXReader.rows(from: data, password: password)
+                print("🗂 [Import] ✅ ProtectedXLSXReader returned \(rows.count) rows")
+                for (i, r) in rows.prefix(8).enumerated() {
+                    print("🗂   row[\(i)] (\(r.count) cols): \(r.prefix(4).map { $0.isEmpty ? "∅" : String($0.prefix(20)) })")
+                }
+                return rows
+            } catch let error as ProtectedXLSXReaderError {
+                switch error {
+                case .invalidPassword:
+                    throw ImportError.invalidPassword(passwordKey: filePasswordKey, fileName: url.lastPathComponent)
+                case .unsupportedEncryption:
+                    throw ImportError.xlsxFailed(error.localizedDescription)
+                default:
+                    throw ImportError.xlsxFailed(error.localizedDescription)
+                }
+            }
+        }
+
+        if isOLE2 {
+            print("🗂 [Import] → LegacyXLSReader (OLE2/.xls)")
+            do {
+                let rows = try LegacyXLSReader.rows(from: data)
+                print("🗂 [Import] ✅ LegacyXLSReader returned \(rows.count) rows")
+                for (i, r) in rows.prefix(8).enumerated() {
+                    print("🗂   row[\(i)] (\(r.count) cols): \(r.prefix(4).map { $0.isEmpty ? "∅" : String($0.prefix(20)) })")
+                }
+                return rows
+            } catch {
+                print("🗂 [Import] ❌ LegacyXLSReader threw: \(error.localizedDescription)")
+                throw ImportError.xlsFailed(error.localizedDescription)
+            }
+        }
 
         if isZIP || ext == "xlsx" {
             print("🗂 [Import] → XLSXReader")
@@ -64,7 +128,18 @@ enum CSVImportService {
 
         if ext == "xls" {
             if let rows = parseRowsFromTextData(data), !rows.isEmpty { return rows }
-            throw ImportError.biff8NotSupported
+            print("🗂 [Import] → LegacyXLSReader (.xls fallback)")
+            do {
+                let rows = try LegacyXLSReader.rows(from: data)
+                print("🗂 [Import] ✅ LegacyXLSReader returned \(rows.count) rows")
+                for (i, r) in rows.prefix(8).enumerated() {
+                    print("🗂   row[\(i)] (\(r.count) cols): \(r.prefix(4).map { $0.isEmpty ? "∅" : String($0.prefix(20)) })")
+                }
+                return rows
+            } catch {
+                print("🗂 [Import] ❌ LegacyXLSReader threw: \(error.localizedDescription)")
+                throw ImportError.xlsFailed(error.localizedDescription)
+            }
         }
 
         print("🗂 [Import] → text parser")
@@ -94,6 +169,117 @@ enum CSVImportService {
             return nil
         }
         return parseRows(raw)
+    }
+
+    private static func looksLikePasswordProtectedOOXML(_ data: Data) -> Bool {
+        encryptedOOXMLMarkers.allSatisfy { marker in
+            !marker.isEmpty && data.range(of: marker) != nil
+        }
+    }
+
+    // MARK: - OFX parser (SGML 1.x e XML 2.x)
+
+    /// Retorna `true` se os primeiros bytes do arquivo contêm marcadores OFX.
+    private static func isOFXContent(_ data: Data) -> Bool {
+        let sample = data.prefix(512)
+        guard let text = String(data: sample, encoding: .utf8)
+                      ?? String(data: sample, encoding: .isoLatin1) else { return false }
+        let upper = text.uppercased()
+        return upper.contains("OFXHEADER:") || upper.contains("<OFX>") || upper.contains("<?OFX")
+    }
+
+    /// Converte um arquivo OFX em `[[String]]` com header `["Data","Descrição","Valor"]`.
+    /// Funciona tanto com OFX 1.x (SGML, sem fechamento de tags) quanto OFX 2.x (XML).
+    private static func parseOFX(from data: Data) throws -> [[String]] {
+        guard let content = String(data: data, encoding: .utf8)
+                         ?? String(data: data, encoding: .isoLatin1) else {
+            throw ImportError.encodingFailed
+        }
+
+        // Header compatível com detectColumns() — palavras-chave reconhecidas pelo parser
+        var rows: [[String]] = [["Data", "Descrição", "Valor"]]
+
+        var inTransaction = false
+        var date          = ""
+        var memo          = ""
+        var name          = ""
+        var amount        = ""
+
+        let lines = content
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r",   with: "\n")
+            .components(separatedBy: "\n")
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+
+            let upper = trimmed.uppercased()
+
+            // ── Abertura de transação ─────────────────────────────────────
+            if upper.hasPrefix("<STMTTRN>") {
+                inTransaction = true
+                date = ""; memo = ""; name = ""; amount = ""
+                continue
+            }
+
+            // ── Fechamento de transação ───────────────────────────────────
+            if upper.hasPrefix("</STMTTRN>") {
+                if inTransaction, !date.isEmpty, !amount.isEmpty {
+                    // Prefere NAME; cai para MEMO; usa placeholder se ambos vazios
+                    let description: String
+                    let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let m = memo.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !n.isEmpty && !m.isEmpty && n.lowercased() != m.lowercased() {
+                        description = "\(n) – \(m)"
+                    } else {
+                        description = n.isEmpty ? m : n
+                    }
+                    rows.append([date, description, amount])
+                }
+                inTransaction = false
+                continue
+            }
+
+            guard inTransaction else { continue }
+
+            // ── Campos da transação ───────────────────────────────────────
+            if let v = ofxTagValue(trimmed, tag: "DTPOSTED") {
+                date = formatOFXDate(v) ?? v
+            } else if let v = ofxTagValue(trimmed, tag: "TRNAMT") {
+                amount = v
+            } else if let v = ofxTagValue(trimmed, tag: "NAME") {
+                name = v
+            } else if let v = ofxTagValue(trimmed, tag: "MEMO") {
+                memo = v
+            }
+        }
+
+        guard rows.count > 1 else { throw ImportError.emptyFile }
+        return rows
+    }
+
+    /// Extrai o valor de uma tag OFX tanto no formato SGML (`<TAG>valor`)
+    /// quanto no formato XML (`<TAG>valor</TAG>`).
+    private static func ofxTagValue(_ line: String, tag: String) -> String? {
+        let openTag = "<\(tag)>"
+        guard line.uppercased().hasPrefix(openTag) else { return nil }
+        var value = String(line.dropFirst(openTag.count))
+        // Remove a tag de fechamento se presente (OFX 2.x / XML)
+        if let closeRange = value.range(of: "</\(tag)>", options: .caseInsensitive) {
+            value = String(value[..<closeRange.lowerBound])
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Converte data OFX (`YYYYMMDD` ou `YYYYMMDDHHmmss[.xxx][+offset]`) para `dd/MM/yyyy`.
+    private static func formatOFXDate(_ raw: String) -> String? {
+        let digits = String(raw.filter(\.isNumber).prefix(8))
+        guard digits.count == 8 else { return nil }
+        let year  = digits.prefix(4)
+        let month = digits.dropFirst(4).prefix(2)
+        let day   = digits.dropFirst(6).prefix(2)
+        return "\(day)/\(month)/\(year)"
     }
 
     // MARK: - Parse raw text → matrix
@@ -217,16 +403,17 @@ enum CSVImportService {
 
     static func detectColumns(in rows: [[String]]) -> ColumnMap? {
         print("🔍 [detectColumns] total rows=\(rows.count), first row cols=\(rows.first?.count ?? 0)")
+        for (index, row) in rows.prefix(8).enumerated() {
+            let preview = row.enumerated().map { "[\($0.offset)]=\($0.element.isEmpty ? "∅" : $0.element)" }.joined(separator: " | ")
+            print("🔍 [detectColumns] row[\(index)] \(preview)")
+        }
         for (rowIndex, headers) in rows.enumerated() {
             if let map = detectColumns(inHeader: headers, headerRowIndex: rowIndex) {
-                print("🔍 [detectColumns] ✅ header match at row \(rowIndex): date=\(map.dateIndex) desc=\(map.descriptionIndex) amount=\(map.amountIndex)")
+                let headerPreview = headers.enumerated().map { "[\($0.offset)]=\($0.element.isEmpty ? "∅" : $0.element)" }.joined(separator: " | ")
+                print("🔍 [detectColumns] ✅ header match at row \(rowIndex): date=\(map.dateIndex) desc=\(map.descriptionIndex) amount=\(map.amountIndex) positive=\(map.amountIsAlwaysPositive)")
+                print("🔍 [detectColumns] header row raw: \(headerPreview)")
                 return map
             }
-        }
-
-        if let inferred = inferColumnsFromData(in: rows) {
-            print("🔍 [detectColumns] ✅ inferred from data")
-            return inferred
         }
 
         if let santander = inferSantanderColumns(in: rows) {
@@ -234,10 +421,21 @@ enum CSVImportService {
             return santander
         }
 
+        if let inferred = inferColumnsFromData(in: rows) {
+            print("🔍 [detectColumns] ✅ inferred from data")
+            return inferred
+        }
+
         guard let headers = rows.first, headers.count >= 3 else {
             print("🔍 [detectColumns] ❌ nil — rows.first=\(rows.first?.count ?? -1) cols")
             return nil
         }
+
+        guard positionalFallbackLooksLikeTransactions(in: rows) else {
+            print("🔍 [detectColumns] ❌ positional fallback rejected — rows do not look like bank transactions")
+            return nil
+        }
+
         print("🔍 [detectColumns] ⚠️ positional fallback")
         return ColumnMap(
             dateIndex: 0,
@@ -262,13 +460,20 @@ enum CSVImportService {
         let dateIdx = h.firstIndex(where: isDateColumn)
 
         // ── Description ───────────────────────────────────────────────────
-        let descKw = ["concepto", "descripci", "descripcion", "descrição", "descricao",
-                      "descri", "operaci", "operac", "description", "details",
-                      "histor", "historico", "histórico", "memo", "referenc",
-                      "concept", "benefi", "detalhe", "detalh", "lancamento",
-                      "lançamento", "merchant", "estabelecimento", "comercio"]
+        // Tier 1: colunas de nome de estabelecimento / transação (maior prioridade)
+        let descHighKw = ["nome do local", "nome da transac", "nome comercial",
+                          "estabelecimento", "merchant", "comercio", "comerciante",
+                          "local", "loja"]
+        // Tier 2: colunas genéricas de descrição / histórico
+        let descLowKw  = ["concepto", "descripci", "descripcion", "descrição", "descricao",
+                          "descri", "operaci", "operac", "description", "details",
+                          "histor", "historico", "histórico", "memo", "referenc",
+                          "concept", "benefi", "detalhe", "detalh", "lancamento",
+                          "lançamento", "nome", "transac", "transação"]
         let descIdx = h.firstIndex { col in
-            !isDateColumn(col) && descKw.contains { col.contains($0) }
+            !isDateColumn(col) && descHighKw.contains { col.contains($0) }
+        } ?? h.firstIndex { col in
+            !isDateColumn(col) && descLowKw.contains { col.contains($0) }
         }
 
         // ── Amount ────────────────────────────────────────────────────────
@@ -283,7 +488,7 @@ enum CSVImportService {
 
         // Prioridade 2: coluna genérica de valor/importe (exclui data e saldo).
         let balanceKw = ["saldo", "balance", "disponib"]
-        let amountKw  = ["importe", "amount", "valor", "monto", "quantia", "total",
+        let amountKw  = ["importe", "amount", "valor", "monto", "montante", "quantia", "total",
                          "moviment", "movement", "transaction", "transacao", "transação"]
         let amountIdx = h.firstIndex { col in
             amountKw.contains { col.contains($0) } &&
@@ -293,7 +498,7 @@ enum CSVImportService {
 
         let (finalAmountIdx, alwaysPositive): (Int?, Bool)
         if let di = debitIdx {
-            (finalAmountIdx, alwaysPositive) = (di, true)
+            (finalAmountIdx, alwaysPositive) = (di, false)
         } else if let ai = amountIdx {
             (finalAmountIdx, alwaysPositive) = (ai, false)
         } else {
@@ -349,6 +554,10 @@ enum CSVImportService {
     }
 
     private static func inferSantanderColumns(in rows: [[String]]) -> ColumnMap? {
+        if let headerMap = inferSantanderBrazilHeaderColumns(in: rows) {
+            return headerMap
+        }
+
         for startIndex in rows.indices {
             let sampleRows = Array(rows.dropFirst(startIndex).prefix(20))
             let matches = sampleRows.filter { row in
@@ -372,6 +581,76 @@ enum CSVImportService {
         }
 
         return nil
+    }
+
+    private static func inferSantanderBrazilHeaderColumns(in rows: [[String]]) -> ColumnMap? {
+        for (rowIndex, row) in rows.enumerated() {
+            let normalized = row.map(normalizeHeaderToken)
+            guard normalized.contains(where: { $0 == "data" }),
+                  normalized.contains(where: { $0.contains("descricao") }),
+                  normalized.contains(where: { $0.contains("debito") }),
+                  normalized.contains(where: { $0.contains("credito") || $0.contains("saldo") }) else {
+                continue
+            }
+
+            guard let dateIndex = normalized.firstIndex(where: { $0 == "data" }),
+                  let descriptionIndex = normalized.firstIndex(where: { $0.contains("descricao") }),
+                  let debitIndex = normalized.firstIndex(where: { $0.contains("debito") }) else {
+                continue
+            }
+
+            let dataRows = Array(rows.dropFirst(rowIndex + 1))
+            guard santanderBrazilDataRowsMatch(dataRows, dateIndex: dateIndex, descriptionIndex: descriptionIndex, debitIndex: debitIndex) else {
+                continue
+            }
+
+            return ColumnMap(
+                dateIndex: dateIndex,
+                descriptionIndex: descriptionIndex,
+                amountIndex: debitIndex,
+                headerRowIndex: rowIndex,
+                amountIsAlwaysPositive: treatsPositiveAmountsAsDebits(in: dataRows, amountIndex: debitIndex)
+            )
+        }
+
+        return nil
+    }
+
+    private static func santanderBrazilDataRowsMatch(
+        _ rows: [[String]],
+        dateIndex: Int,
+        descriptionIndex: Int,
+        debitIndex: Int
+    ) -> Bool {
+        let maxIndex = max(dateIndex, descriptionIndex, debitIndex)
+        let matches = rows.prefix(40).filter { row in
+            row.count > maxIndex &&
+            parseDate(row[dateIndex]) != nil &&
+            looksLikeDescription(row[descriptionIndex]) &&
+            parseAmount(row[debitIndex]) != nil
+        }
+
+        return matches.count >= 2
+    }
+
+    nonisolated private static func normalizeHeaderToken(_ value: String) -> String {
+        value
+            .lowercased()
+            .folding(options: .diacriticInsensitive, locale: nil)
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func positionalFallbackLooksLikeTransactions(in rows: [[String]]) -> Bool {
+        let sampleRows = rows.dropFirst().prefix(12)
+        let matches = sampleRows.filter { row in
+            row.count >= 3 &&
+            parseDate(row[0]) != nil &&
+            looksLikeDescription(row[1]) &&
+            parseAmount(row[2]) != nil
+        }
+
+        return matches.count >= 2
     }
 
     private static func scoreColumns(in rows: [[String]], maxColumnCount: Int) -> [ColumnScore] {
@@ -440,13 +719,28 @@ enum CSVImportService {
             amountIndex: columns.amountIndex
         )
 
+        print("🧾 [extractTransactions] headerRowIndex=\(columns.headerRowIndex) dateIndex=\(columns.dateIndex) descIndex=\(columns.descriptionIndex) amountIndex=\(columns.amountIndex) importPositiveAmounts=\(importPositiveAmounts)")
+        if rows.indices.contains(columns.headerRowIndex) {
+            let header = rows[columns.headerRowIndex]
+            let headerPreview = header.enumerated().map { "[\($0.offset)]=\($0.element.isEmpty ? "∅" : $0.element)" }.joined(separator: " | ")
+            print("🧾 [extractTransactions] header row: \(headerPreview)")
+        }
+
+        var debugPrinted = 0
         for chunk in chunks {
             for row in chunk {
                 guard row.count > maxIdx else { continue }
 
                 let rawDate   = row[columns.dateIndex].trimmingCharacters(in: .whitespaces)
                 let rawDesc   = row[columns.descriptionIndex].trimmingCharacters(in: .whitespaces)
-                let rawAmount = row[columns.amountIndex].trimmingCharacters(in: .whitespaces)
+                let rawAmount = resolvedAmountField(in: row, preferredIndex: columns.amountIndex).trimmingCharacters(in: .whitespaces)
+
+                if debugPrinted < 12 {
+                    let rowPreview = row.enumerated().map { "[\($0.offset)]=\($0.element.isEmpty ? "∅" : $0.element)" }.joined(separator: " | ")
+                    print("🧾 [extractTransactions] row sample: \(rowPreview)")
+                    print("🧾 [extractTransactions] -> rawDate='\(rawDate)' rawDesc='\(rawDesc)' rawAmount='\(rawAmount)'")
+                    debugPrinted += 1
+                }
 
                 guard !rawDate.isEmpty, !rawAmount.isEmpty else { continue }
                 guard let amount = parseAmount(rawAmount) else { continue }
@@ -469,6 +763,26 @@ enum CSVImportService {
         }
 
         return all
+    }
+
+    private static func resolvedAmountField(in row: [String], preferredIndex: Int) -> String {
+        if row.indices.contains(preferredIndex) {
+            let preferred = row[preferredIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+            if parseAmount(preferred) != nil {
+                return preferred
+            }
+        }
+
+        let nearbyIndexes = [preferredIndex - 2, preferredIndex - 1, preferredIndex + 1, preferredIndex + 2]
+            .filter { row.indices.contains($0) }
+
+        for index in nearbyIndexes {
+            let candidate = row[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard parseAmount(candidate) != nil else { continue }
+            return candidate
+        }
+
+        return row.indices.contains(preferredIndex) ? row[preferredIndex] : ""
     }
 
     private static func treatsPositiveAmountsAsDebits(in rows: [[String]], amountIndex: Int) -> Bool {
@@ -599,7 +913,11 @@ enum CSVImportService {
         case encodingFailed
         case columnDetectionFailed
         case xlsxFailed(String)
+        case xlsFailed(String)
         case biff8NotSupported
+        case passwordProtectedXLSX
+        case passwordRequired(passwordKey: String, fileName: String)
+        case invalidPassword(passwordKey: String, fileName: String)
 
         var errorDescription: String? {
             switch self {
@@ -608,7 +926,11 @@ enum CSVImportService {
             case .encodingFailed:        return t("csv.errorEncoding")
             case .columnDetectionFailed: return t("csv.errorColumns")
             case .xlsxFailed(let msg):   return msg
+            case .xlsFailed(let msg):    return msg
             case .biff8NotSupported:     return t("csv.errorXLS")
+            case .passwordProtectedXLSX: return t("csv.errorProtectedXLSX")
+            case .passwordRequired:      return t("csv.errorProtectedXLSX")
+            case .invalidPassword:       return t("csv.passwordWrong")
             }
         }
     }

@@ -5,7 +5,7 @@ struct Step1AmountView: View {
     /// Quando `true`, o scanner abre automaticamente no primeiro `onAppear`.
     var openScannerOnAppear: Bool = false
 
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
     @State private var showScanner = false
 
     var body: some View {

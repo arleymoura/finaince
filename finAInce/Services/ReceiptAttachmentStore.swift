@@ -132,7 +132,7 @@ enum ReceiptAttachmentStore {
             kind: draft.kind
         )
         attachment.transaction = transaction
-        transaction.receiptAttachments.append(attachment)
+        transaction.receiptAttachments = (transaction.receiptAttachments ?? []) + [attachment]
         modelContext.insert(attachment)
         return attachment
     }
@@ -158,7 +158,7 @@ enum ReceiptAttachmentStore {
     }
 
     static func cleanupFiles(for transaction: Transaction) {
-        transaction.receiptAttachments.forEach {
+        (transaction.receiptAttachments ?? []).forEach {
             if let url = fileURL(for: $0) {
                 try? FileManager.default.removeItem(at: url)
             }

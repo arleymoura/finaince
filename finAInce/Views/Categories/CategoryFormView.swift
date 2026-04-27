@@ -97,23 +97,6 @@ struct CategoryFormView: View {
                     }
                 }
 
-                // ── Tipo — apenas categorias raiz ──────────────────────────
-                if !isSubcategory {
-                    Section {
-                        Picker(t("category.typeLabel"), selection: $categoryType) {
-                            ForEach(CategoryType.allCases, id: \.self) { tp in
-                                Text(tp.label).tag(tp)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                    } header: {
-                        Text(t("category.typeLabel"))
-                    } footer: {
-                        Text(categoryType == .expense
-                             ? t("category.footerExpense")
-                             : t("category.footerBoth"))
-                    }
-                }
             }
             .navigationTitle(navTitle)
             .navigationBarTitleDisplayMode(.inline)
@@ -155,6 +138,7 @@ struct CategoryFormView: View {
             if !isSubcategory {
                 existing.color = colorHex
                 existing.type  = categoryType
+                updateDescendantAppearance(for: existing, color: colorHex, type: categoryType)
             }
         } else {
             let newColor = isSubcategory ? (parent?.color ?? colorHex) : colorHex
@@ -172,6 +156,14 @@ struct CategoryFormView: View {
             onCreated?(newCat)
         }
         dismiss()
+    }
+
+    private func updateDescendantAppearance(for category: Category, color: String, type: CategoryType) {
+        for subcategory in (category.subcategories ?? []) {
+            subcategory.color = color
+            subcategory.type = type
+            updateDescendantAppearance(for: subcategory, color: color, type: type)
+        }
     }
 }
 
@@ -221,49 +213,92 @@ struct SFSymbolPickerView: View {
     @Binding var selected: String
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
+    @State private var selectedGroupTitle: String?
 
     private let columns = [GridItem(.adaptive(minimum: 56), spacing: 8)]
 
+    private var sortedLocalizedGroups: [SFSymbolGroup] {
+        allSFSymbolGroups.sorted {
+            localizedGroupTitle(for: $0).localizedCaseInsensitiveCompare(localizedGroupTitle(for: $1)) == .orderedAscending
+        }
+    }
+
+    private var visibleGroups: [SFSymbolGroup] {
+        guard let selectedGroupTitle else { return sortedLocalizedGroups }
+        return sortedLocalizedGroups.filter { $0.title == selectedGroupTitle }
+    }
+
     private var filteredSymbols: [String] {
-        guard !searchText.isEmpty else { return allSFSymbolGroups.flatMap(\.symbols) }
-        return sfSymbolsMatching(searchText)
+        let baseSymbols: [String]
+        if searchText.isEmpty {
+            baseSymbols = visibleGroups.flatMap(\.symbols)
+        } else {
+            baseSymbols = sfSymbolsMatching(searchText)
+        }
+
+        guard let selectedGroupTitle,
+              let selectedGroup = allSFSymbolGroups.first(where: { $0.title == selectedGroupTitle }) else {
+            return baseSymbols
+        }
+
+        let allowedSymbols = Set(selectedGroup.symbols)
+        return baseSymbols.filter { allowedSymbols.contains($0) }
     }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                if searchText.isEmpty {
-                    ForEach(allSFSymbolGroups) { group in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(group.title)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
+            VStack(spacing: 0) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        filterChip(title: t("symbolPicker.all"), isSelected: selectedGroupTitle == nil) {
+                            selectedGroupTitle = nil
+                        }
+
+                        ForEach(sortedLocalizedGroups) { group in
+                            filterChip(title: localizedGroupTitle(for: group), isSelected: selectedGroupTitle == group.title) {
+                                selectedGroupTitle = group.title
+                            }
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
+                }
+
+                ScrollView {
+                    if searchText.isEmpty {
+                        ForEach(visibleGroups) { group in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(localizedGroupTitle(for: group))
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal)
+                                    .padding(.top, 12)
+                                LazyVGrid(columns: columns, spacing: 8) {
+                                    ForEach(group.symbols, id: \.self) { sym in
+                                        symbolCell(sym)
+                                    }
+                                }
                                 .padding(.horizontal)
-                                .padding(.top, 12)
+                            }
+                        }
+                        .padding(.bottom, 24)
+                    } else {
+                        if filteredSymbols.isEmpty {
+                            ContentUnavailableView(
+                                t("symbolPicker.noResults"),
+                                systemImage: "magnifyingglass",
+                                description: Text(t("symbolPicker.noResultsDesc"))
+                            )
+                            .padding(.top, 60)
+                        } else {
                             LazyVGrid(columns: columns, spacing: 8) {
-                                ForEach(group.symbols, id: \.self) { sym in
+                                ForEach(filteredSymbols, id: \.self) { sym in
                                     symbolCell(sym)
                                 }
                             }
-                            .padding(.horizontal)
+                            .padding()
                         }
-                    }
-                    .padding(.bottom, 24)
-                } else {
-                    if filteredSymbols.isEmpty {
-                        ContentUnavailableView(
-                            t("symbolPicker.noResults"),
-                            systemImage: "magnifyingglass",
-                            description: Text(t("symbolPicker.noResultsDesc"))
-                        )
-                        .padding(.top, 60)
-                    } else {
-                        LazyVGrid(columns: columns, spacing: 8) {
-                            ForEach(filteredSymbols, id: \.self) { sym in
-                                symbolCell(sym)
-                            }
-                        }
-                        .padding()
                     }
                 }
             }
@@ -271,17 +306,67 @@ struct SFSymbolPickerView: View {
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: t("symbolPicker.search"))
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(t("common.ok")) { dismiss() }.fontWeight(.semibold)
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(t("common.close")) { dismiss() }
                 }
             }
         }
     }
 
+    private func localizedGroupTitle(for group: SFSymbolGroup) -> String {
+        let key: String
+
+        switch group.title {
+        case "Acessibilidade": key = "symbolPicker.group.accessibility"
+        case "Alimentação & Bebida": key = "symbolPicker.group.foodDrink"
+        case "Casa & Moradia": key = "symbolPicker.group.homeLiving"
+        case "Clima": key = "symbolPicker.group.weather"
+        case "Comunicação": key = "symbolPicker.group.communication"
+        case "Compras & Moda": key = "symbolPicker.group.shoppingFashion"
+        case "Conectividade": key = "symbolPicker.group.connectivity"
+        case "Dispositivos": key = "symbolPicker.group.devices"
+        case "Edição & Texto": key = "symbolPicker.group.editingText"
+        case "Educação": key = "symbolPicker.group.education"
+        case "Finanças": key = "symbolPicker.group.finance"
+        case "Formas": key = "symbolPicker.group.shapes"
+        case "Geral & Outros": key = "symbolPicker.group.generalOther"
+        case "Lazer & Entretenimento": key = "symbolPicker.group.leisureEntertainment"
+        case "Mapas & Localização": key = "symbolPicker.group.mapsLocation"
+        case "Mídia & Controles": key = "symbolPicker.group.mediaControls"
+        case "Natureza": key = "symbolPicker.group.nature"
+        case "Objetos & Ferramentas": key = "symbolPicker.group.objectsTools"
+        case "Pessoas & Gestos": key = "symbolPicker.group.peopleGestures"
+        case "Privacidade & Segurança": key = "symbolPicker.group.privacySecurity"
+        case "Saúde & Fitness": key = "symbolPicker.group.healthFitness"
+        case "Setas": key = "symbolPicker.group.arrows"
+        case "Transporte": key = "symbolPicker.group.transport"
+        default: return group.title
+        }
+
+        return t(key)
+    }
+
+    @ViewBuilder
+    private func filterChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(isSelected ? Color.accentColor : Color(.secondarySystemBackground))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
     @ViewBuilder
     private func symbolCell(_ sym: String) -> some View {
         let isSelected = selected == sym
-        Button { selected = sym } label: {
+        Button {
+            selected = sym
+            dismiss()
+        } label: {
             Image(systemName: sym)
                 .font(.title2)
                 .frame(width: 52, height: 52)

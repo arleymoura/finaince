@@ -55,7 +55,7 @@ struct AccountsView: View {
                         .background(Color.red)
                         .clipShape(RoundedRectangle(cornerRadius: 14))
 
-                    Text("Excluir conta")
+                    Text(t("account.deleteTitle"))
                         .font(.title3.weight(.bold))
                         .foregroundStyle(.primary)
                 }
@@ -64,11 +64,11 @@ struct AccountsView: View {
 
                 // BODY
                 VStack(spacing: 10) {
-                    Text("Essa ação não pode ser desfeita.")
+                    Text(t("common.cannotUndo"))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
 
-                    Text("Todas as transações associadas a esta conta serão removidas permanentemente.")
+                    Text(t("account.deleteMessage"))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -82,7 +82,7 @@ struct AccountsView: View {
                     Button {
                         onConfirm()
                     } label: {
-                        Text("Excluir permanentemente")
+                        Text(t("account.deleteForever"))
                             .font(.headline)
                             .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
@@ -94,7 +94,7 @@ struct AccountsView: View {
                     Button {
                         onCancel()
                     } label: {
-                        Text("Cancelar")
+                        Text(t("common.cancel"))
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity)
@@ -309,7 +309,7 @@ struct AccountFormView: View {
                         } label: {
                             HStack {
                                 Spacer()
-                                Text("Excluir conta")
+                                Text(t("account.deleteTitle"))
                                 Spacer()
                             }
                         }

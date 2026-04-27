@@ -16,7 +16,7 @@ struct CategoryManagerView: View {
         categories
             .filter { $0.parent == nil }
             .sorted { lhs, rhs in
-                lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
             }
     }
 
@@ -45,8 +45,8 @@ struct CategoryManagerView: View {
 
                             Spacer()
 
-                            if !root.subcategories.isEmpty {
-                                Text("\(root.subcategories.count)")
+                            if !(root.subcategories ?? []).isEmpty {
+                                Text("\((root.subcategories ?? []).count)")
                                     .font(.caption.weight(.bold))
                                     .foregroundStyle(.white)
                                     .padding(.horizontal, 7)
@@ -83,8 +83,8 @@ struct CategoryManagerView: View {
             Button(t("common.delete"), role: .destructive) { modelContext.delete(cat) }
             Button(t("common.cancel"), role: .cancel) {}
         } message: { cat in
-            if !cat.subcategories.isEmpty {
-                Text(t("category.deleteWithSubs", cat.subcategories.count))
+            if !(cat.subcategories ?? []).isEmpty {
+                Text(t("category.deleteWithSubs", (cat.subcategories ?? []).count))
             } else {
                 Text(t("category.deleteMessage"))
             }
@@ -102,7 +102,7 @@ struct CategoryManagerView: View {
                 .background(Color(hex: cat.color))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            Text(cat.name)
+            Text(cat.displayName)
                 .font(.subheadline.weight(.semibold))
 
             Spacer()
@@ -140,8 +140,8 @@ struct SubcategoryListView: View {
     @State private var showDeleteAlert             = false
 
     private var subcategories: [Category] {
-        parent.subcategories.sorted { lhs, rhs in
-            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        (parent.subcategories ?? []).sorted { lhs, rhs in
+            lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
         }
     }
 
@@ -156,7 +156,7 @@ struct SubcategoryListView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .navigationTitle(parent.name)
+        .navigationTitle(parent.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -180,7 +180,7 @@ struct SubcategoryListView: View {
                 do {
                     try modelContext.save()
                 } catch {
-                    print("Erro ao deletar categoria: \(error)") //todo: lcalizar
+                    print("\(t("category.deleteErrorLog")): \(error)")
                 }
             }
             
@@ -225,7 +225,7 @@ struct SubcategoryListView: View {
                 .background(Color(hex: cat.color))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            Text(cat.name)
+            Text(cat.displayName)
                 .font(.subheadline)
 
             Spacer()

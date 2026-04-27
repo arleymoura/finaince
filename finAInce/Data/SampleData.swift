@@ -32,13 +32,16 @@ struct SampleData {
 
         let allCategories = (try? modelContext.fetch(FetchDescriptor<Category>())) ?? []
 
-        func cat(_ name: String) -> Category? {
-            allCategories.first { $0.name == name && $0.parent == nil }
+        func cat(_ systemKey: String) -> Category? {
+            DefaultCategories.category(withSystemKey: systemKey, in: allCategories)
         }
 
-        func sub(_ name: String, of parentName: String) -> Category? {
-            guard let parentCat = cat(parentName) else { return nil }
-            return allCategories.first { $0.name == name && $0.parent?.id == parentCat.id }
+        func sub(_ systemKey: String, of parentSystemKey: String) -> Category? {
+            DefaultCategories.subcategory(
+                withSystemKey: systemKey,
+                parentSystemKey: parentSystemKey,
+                in: allCategories
+            )
         }
 
         // MARK: - Datas do mês corrente
@@ -70,30 +73,30 @@ struct SampleData {
         let definitions: [TxDef] = [
 
             // Moradia — aluguel e condomínio como pendentes (vence depois do dia atual)
-            (.expense, 1_800.00, date(5),  "Aluguel",        checking,   cat("Moradia"),     sub("Aluguel",        of: "Moradia"),     date(5)  <= now),
-            (.expense,   180.00, date(20), "Condomínio",     checking,   cat("Moradia"),     sub("Condomínio",     of: "Moradia"),     today >= 20),
-            (.expense,    89.90, date(15), "Vivo Fibra",     checking,   cat("Moradia"),     sub("Internet",       of: "Moradia"),     today >= 15),
-            (.expense,   120.00, date(25), "Energia",        checking,   cat("Moradia"),     sub("Energia",        of: "Moradia"),     today >= 25),
+            (.expense, 1_800.00, date(5),  "Aluguel",        checking,   cat("housing"),     sub("housing.rent",        of: "housing"),     date(5)  <= now),
+            (.expense,   180.00, date(20), "Condomínio",     checking,   cat("housing"),     sub("housing.condo",       of: "housing"),     today >= 20),
+            (.expense,    89.90, date(15), "Vivo Fibra",     checking,   cat("housing"),     sub("housing.internet",    of: "housing"),     today >= 15),
+            (.expense,   120.00, date(25), "Energia",        checking,   cat("housing"),     sub("housing.energy",      of: "housing"),     today >= 25),
 
             // Supermercado
-            (.expense,   320.00, date(3),  "Supermercado",   checking,   cat("Supermercado"), sub("Mercado",        of: "Supermercado"), true),
-            (.expense,   165.00, date(11), "Supermercado",   checking,   cat("Supermercado"), sub("Mercado",        of: "Supermercado"), date(11) <= now),
+            (.expense,   320.00, date(3),  "Supermercado",   checking,   cat("groceries"), sub("groceries.market", of: "groceries"), true),
+            (.expense,   165.00, date(11), "Supermercado",   checking,   cat("groceries"), sub("groceries.market", of: "groceries"), date(11) <= now),
 
             // Restaurantes
-            (.expense,    75.50, date(6),  "iFood",          creditCard, cat("Restaurantes"), sub("Delivery",       of: "Restaurantes"), true),
-            (.expense,    45.00, date(9),  "Restaurante",    creditCard, cat("Restaurantes"), sub("Almoço / Jantar", of: "Restaurantes"), date(9) <= now),
+            (.expense,    75.50, date(6),  "iFood",          creditCard, cat("restaurants"), sub("restaurants.delivery", of: "restaurants"), true),
+            (.expense,    45.00, date(9),  "Restaurante",    creditCard, cat("restaurants"), sub("restaurants.lunchDinner", of: "restaurants"), date(9) <= now),
 
             // Transporte
-            (.expense,   250.00, date(4),  "Combustível",    checking,   cat("Transporte"),  sub("Combustível",    of: "Transporte"),  true),
-            (.expense,    32.00, date(8),  "Uber",           creditCard, cat("Transporte"),  sub("Uber / Táxi",    of: "Transporte"),  true),
+            (.expense,   250.00, date(4),  "Combustível",    checking,   cat("transport"),  sub("transport.fuel", of: "transport"),  true),
+            (.expense,    32.00, date(8),  "Uber",           creditCard, cat("transport"),  sub("transport.rideHailing", of: "transport"),  true),
 
             // Saúde — plano pendente, farmácia paga
-            (.expense,   380.00, date(10), "Plano de Saúde", checking,   cat("Saúde"),       sub("Plano de Saúde", of: "Saúde"),       today >= 10),
-            (.expense,    65.00, date(6),  "Farmácia",       creditCard, cat("Saúde"),       sub("Farmácia",       of: "Saúde"),       true),
+            (.expense,   380.00, date(10), "Plano de Saúde", checking,   cat("health"),       sub("health.insurance", of: "health"),       today >= 10),
+            (.expense,    65.00, date(6),  "Farmácia",       creditCard, cat("health"),       sub("health.pharmacy",  of: "health"),       true),
 
             // Lazer
-            (.expense,    49.90, date(1),  "Netflix",        creditCard, cat("Lazer"),       sub("Assinaturas",    of: "Lazer"),       true),
-            (.expense,   120.00, date(12), "Barzinho",       creditCard, cat("Lazer"),       sub("Bares",          of: "Lazer"),       date(12) <= now),
+            (.expense,    49.90, date(1),  "Netflix",        creditCard, cat("subscriptions"), sub("subscriptions.streaming", of: "subscriptions"), true),
+            (.expense,   120.00, date(12), "Barzinho",       creditCard, cat("restaurants"),  sub("restaurants.bars", of: "restaurants"), date(12) <= now),
         ]
 
         for def in definitions {

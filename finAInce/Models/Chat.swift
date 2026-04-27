@@ -10,15 +10,15 @@ enum MessageRole: String, Codable {
 
 @Model
 final class ChatConversation {
-    @Attribute(.unique) var id: UUID
-    var title: String
+    var id: UUID = UUID()
+    var title: String = ""
     var monthRef: String?
-    var createdAt: Date
+    var createdAt: Date = Date()
 
     var family: Family?
 
     @Relationship(deleteRule: .cascade, inverse: \ChatMessage.conversation)
-    var messages: [ChatMessage] = []
+    var messages: [ChatMessage]?
 
     init(title: String, monthRef: String? = nil) {
         self.id = UUID()
@@ -32,10 +32,10 @@ final class ChatConversation {
 
 @Model
 final class ChatMessage {
-    @Attribute(.unique) var id: UUID
-    var role: MessageRole
-    var content: String
-    var timestamp: Date
+    var id: UUID = UUID()
+    var role: MessageRole = MessageRole.user
+    var content: String = ""
+    var timestamp: Date = Date()
 
     var conversation: ChatConversation?
 

@@ -132,37 +132,40 @@ struct FamilyMembersView: View {
     @State private var didLoadStoredValues = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            OnboardingHero(
-                title: t("ob.step1.heroTitle"),
-                subtitle: t("ob.step1.heroSubtitle"),
-                progress: 1,
-                icon: "person.3.fill"
-            )
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label(t("settings.familyMembers"), systemImage: "person.2.fill")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
 
-            ScrollView {
+                    Text(t("ob.step1.heroSubtitle"))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section {
                 HouseholdCompositionEditor(adults: $adults, children: $children)
-                    .padding(20)
+                    .padding(.vertical, 4)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             }
-
-            Button {
-                storedAdults = adults
-                storedChildren = children
-                dismiss()
-            } label: {
-                Text(t("common.save"))
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(Color.accentColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-            }
-            .buttonStyle(.plain)
-            .padding(20)
         }
+        .listSectionSpacing(.compact)
         .navigationTitle(t("settings.familyMembers"))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button(t("common.save")) {
+                    storedAdults = adults
+                    storedChildren = children
+                    dismiss()
+                }
+                .fontWeight(.semibold)
+            }
+        }
         .onAppear {
             guard !didLoadStoredValues else { return }
             adults = max(storedAdults, 1)

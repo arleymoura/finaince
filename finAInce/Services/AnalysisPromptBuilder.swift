@@ -9,7 +9,7 @@ struct AnalysisPromptBuilder {
         year: Int,
         currencyCode: String,
         focus: String,
-        analysisGoal: String = "Entender em profundidade este insight e gerar recomendacoes praticas."
+        analysisGoal: String = "Investigate this insight in depth and produce practical recommendations."
     ) -> String {
         let scopedTransactions = transactions.filter { transaction in
             let components = Calendar.current.dateComponents([.month, .year], from: transaction.date)
@@ -53,7 +53,7 @@ struct AnalysisPromptBuilder {
         )
 
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "pt_BR")
+        formatter.locale = LanguageManager.shared.effective.locale
         formatter.dateFormat = "MMMM yyyy"
         var dateComponents = DateComponents()
         dateComponents.year = year
@@ -67,8 +67,8 @@ struct AnalysisPromptBuilder {
                 let description = [
                     transaction.placeName,
                     transaction.notes,
-                    transaction.category?.name,
-                    transaction.subcategory?.name
+                    transaction.category?.displayName,
+                    transaction.subcategory?.displayName
                 ]
                 .compactMap { $0?.lowercased() }
                 .joined(separator: " ")
@@ -78,40 +78,55 @@ struct AnalysisPromptBuilder {
             .sorted { $0.date > $1.date }
             .prefix(15)
             .map { transaction in
-                let place = transaction.placeName ?? transaction.category?.name ?? "Sem descricao"
+                let place = transaction.placeName ?? transaction.category?.displayName ?? "No description"
                 return "- \(transaction.date.formatted(.dateTime.day().month(.abbreviated))) | \(place) | \(transaction.amount.asCurrency(currencyCode))"
             }
             .joined(separator: "\n")
 
         let focusTransactionsBlock = focusTransactions.isEmpty
-            ? "- Nenhuma transacao foi encontrada por correspondencia textual direta com o foco."
+            ? "- No transactions were found through direct textual matching with the focus."
             : focusTransactions
 
+        let responseLanguage = responseLanguageInstruction(for: LanguageManager.shared.effective)
+
         return """
-        Quero uma analise financeira profunda com base nos dados abaixo.
+        I need a deep financial analysis based on the data below.
 
-        Responda em portugues do Brasil.
-        Seja objetivo, pratico e estruturado.
-        Nao repita o contexto integralmente; interprete.
+        Reply in \(responseLanguage).
+        Be objective, practical, and structured.
+        Do not repeat the context in full; interpret it.
 
-        OBJETIVO PRINCIPAL
-        - Investigar em profundidade este ponto: \(focus)
-        - Periodo principal: \(periodLabel)
-        - Tarefa esperada:
-          1. explicar o que provavelmente aconteceu
-          2. apontar causas-raiz
-          3. dizer se isso parece pontual ou tendencia
-          4. listar riscos de curto prazo
-          5. sugerir acoes concretas e priorizadas
+        PRIMARY OBJECTIVE
+        - Investigate this point in depth: \(focus)
+        - Main period: \(periodLabel)
+        - Expected task:
+          1. explain what most likely happened
+          2. identify root causes
+          3. say whether this looks like a one-off event or a trend
+          4. list short-term risks
+          5. suggest concrete, prioritized actions
 
-        INSIGHTS JA IDENTIFICADOS PELO APP
+        INSIGHTS ALREADY IDENTIFIED BY THE APP
         \(insightsBlock)
 
-        TRANSACOES MAIS RELACIONADAS AO FOCO
+        TRANSACTIONS MOST RELATED TO THE FOCUS
         \(focusTransactionsBlock)
 
-        CONTEXTO COMPLETO EXPORTADO PELO APP
+        FULL CONTEXT EXPORTED BY THE APP
         \(exportBlock)
         """
+    }
+
+    private static func responseLanguageInstruction(for language: AppLanguage) -> String {
+        switch language {
+        case .ptBR:
+            return "Brazilian Portuguese (pt-BR)"
+        case .en:
+            return "English (en)"
+        case .es:
+            return "Spanish (es)"
+        case .system:
+            return responseLanguageInstruction(for: LanguageManager.shared.effective)
+        }
     }
 }

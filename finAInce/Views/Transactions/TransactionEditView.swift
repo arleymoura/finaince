@@ -32,7 +32,8 @@ struct TransactionEditView: View {
     @Environment(\.dismiss)      private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Account.createdAt)   private var accounts: [Account]
-    @AppStorage("app.currencyCode")    private var currencyCode = "BRL"
+    @Query private var costCenters: [CostCenter]
+    @AppStorage("app.currencyCode")    private var currencyCode = CurrencyOption.defaultCode
 
     // Local state — aplicado no Save, descartado no Cancel
     @State private var amountText   = ""
@@ -48,6 +49,10 @@ struct TransactionEditView: View {
     // Recurrence editing (only applicable when not yet in a series)
     @State private var editedRecurrenceType:  RecurrenceType = .none
     @State private var editedInstallmentTotal: Int = 2
+
+    // Project
+    @State private var selectedCostCenter: CostCenter? = nil
+    @State private var showProjectPicker = false
 
     // Sheets & dialogs
     @State private var showCategoryPicker   = false
@@ -71,6 +76,8 @@ struct TransactionEditView: View {
         switch transaction.recurrenceType {
         case .monthly:
             return t("transaction.monthlyRecurrenceSeries", idx, total)
+        case .annual:
+            return t("transaction.annualRecurrenceSeries", idx, total)
         case .installment:
             return t("transaction.installmentSeries", idx, total)
         case .none:
@@ -147,11 +154,11 @@ struct TransactionEditView: View {
                                         .foregroundStyle(Color(hex: cat.color))
                                 }
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(cat.name)
+                                    Text(cat.displayName)
                                         .font(.subheadline)
                                         .foregroundStyle(.primary)
                                     if let sub = selectedSubcategory {
-                                        Text(sub.name)
+                                        Text(sub.displayName)
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
@@ -171,13 +178,91 @@ struct TransactionEditView: View {
                     }
                     .buttonStyle(.plain)
                 }
-
-                // Notas
-                Section(t("transaction.notes")) {
-                    TextField(t("transaction.notesPlaceholder"), text: $notes, axis: .vertical)
-                        .lineLimit(3...6)
+                
+                // Projeto
+                if !costCenters.filter(\.isActive).isEmpty {
+                    Section(t("projects.section")) {
+                        Button { showProjectPicker = true } label: {
+                            HStack(spacing: 12) {
+                                if let cc = selectedCostCenter {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(Color(hex: cc.color).opacity(0.15))
+                                            .frame(width: 32, height: 32)
+                                        Image(systemName: cc.icon)
+                                            .font(.subheadline)
+                                            .foregroundStyle(Color(hex: cc.color))
+                                    }
+                                    Text(cc.name)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+                                } else {
+                                    Image(systemName: "folder")
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 32, height: 32)
+                                    Text(t("projects.noProject"))
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .sheet(isPresented: $showProjectPicker) {
+                            ProjectPickerSheet(selectedCostCenter: $selectedCostCenter)
+                        }
+                    }
                 }
 
+                // Recorrência
+                Section(t("newTx.recurrence")) {
+                    if isInRecurrenceSeries {
+                        // Already part of a series — show read-only badge
+                        HStack(spacing: 8) {
+                            Image(systemName: transaction.recurrenceType == .installment
+                                  ? "list.number" : "repeat")
+                                .foregroundStyle(Color.accentColor)
+                            Text(seriesLabel)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        // Not in a series — allow converting
+                        Picker(t("newTx.type"), selection: $editedRecurrenceType) {
+                            Text(t("recurrence.none")).tag(RecurrenceType.none)
+                            Text(t("recurrence.monthly")).tag(RecurrenceType.monthly)
+                            Text(t("recurrence.annual")).tag(RecurrenceType.annual)
+                            Text(t("recurrence.installment")).tag(RecurrenceType.installment)
+                        }
+
+                        if editedRecurrenceType == .installment {
+                            Stepper(
+                                t("transaction.installmentsCount", editedInstallmentTotal),
+                                value: $editedInstallmentTotal,
+                                in: 2...48
+                            )
+                        }
+
+                        if editedRecurrenceType == .monthly {
+                            Label(t("newTx.installmentsNote"),
+                                  systemImage: "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if editedRecurrenceType == .annual {
+                            Label(t("newTx.annualNote"),
+                                  systemImage: "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                
+                //recibos
                 Section(t("receipt.attachments")) {
                     ReceiptAttachmentSourceBar(
                         onCamera: { showReceiptCamera = true },
@@ -201,43 +286,12 @@ struct TransactionEditView: View {
                     }
                 }
 
-                // Recorrência
-                Section(t("newTx.recurrence")) {
-                    if isInRecurrenceSeries {
-                        // Already part of a series — show read-only badge
-                        HStack(spacing: 8) {
-                            Image(systemName: transaction.recurrenceType == .monthly
-                                  ? "repeat" : "list.number")
-                                .foregroundStyle(Color.accentColor)
-                            Text(seriesLabel)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        // Not in a series — allow converting
-                        Picker(t("newTx.type"), selection: $editedRecurrenceType) {
-                            Text(t("recurrence.none")).tag(RecurrenceType.none)
-                            Text(t("recurrence.monthly")).tag(RecurrenceType.monthly)
-                            Text(t("recurrence.installment")).tag(RecurrenceType.installment)
-                        }
-
-                        if editedRecurrenceType == .installment {
-                            Stepper(
-                                t("transaction.installmentsCount", editedInstallmentTotal),
-                                value: $editedInstallmentTotal,
-                                in: 2...48
-                            )
-                        }
-
-                        if editedRecurrenceType == .monthly {
-                            Label(t("newTx.installmentsNote"),
-                                  systemImage: "info.circle")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                // Notas
+                Section(t("transaction.notes")) {
+                    TextField(t("transaction.notesPlaceholder"), text: $notes, axis: .vertical)
+                        .lineLimit(3...6)
                 }
-
+               
                 if shouldShowRecurrenceInsight {
                     Section {
                         recurrenceInsightCard
@@ -354,7 +408,7 @@ struct TransactionEditView: View {
     }
 
     private var sortedReceiptAttachments: [ReceiptAttachment] {
-        transaction.receiptAttachments.sorted { $0.createdAt > $1.createdAt }
+        (transaction.receiptAttachments ?? []).sorted { $0.createdAt > $1.createdAt }
     }
 
     private var recurrenceAmountPoints: [RecurrenceAmountPoint] {
@@ -661,6 +715,9 @@ struct TransactionEditView: View {
         isPaid                  = transaction.isPaid
         editedRecurrenceType    = transaction.recurrenceType
         editedInstallmentTotal  = transaction.installmentTotal ?? 2
+        if let ccId = transaction.costCenterId {
+            selectedCostCenter = costCenters.first { $0.id == ccId }
+        }
     }
 
     // MARK: - Save
@@ -711,6 +768,11 @@ struct TransactionEditView: View {
                     from: transaction,
                     in: modelContext
                 )
+            case .annual:
+                Transaction.generateAnnualRecurrences(
+                    from: transaction,
+                    in: modelContext
+                )
             case .none:
                 break
             }
@@ -728,6 +790,7 @@ struct TransactionEditView: View {
         tx.category     = selectedCategory
         tx.subcategory  = selectedSubcategory
         tx.notes        = notes.isEmpty ? nil : notes
+        tx.costCenterId = selectedCostCenter?.id
     }
 
     private func delete(scope: RecurrenceEditScope) {

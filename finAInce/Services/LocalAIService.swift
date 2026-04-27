@@ -16,8 +16,12 @@ struct TransactionSnapshot: Sendable {
     let id: UUID
     let amount: Double
     let typeRaw: String          // "expense" | "transfer"
+    let categorySystemKey: String?
+    let rootCategorySystemKey: String?
     let categoryName: String
     let subcategoryName: String?
+    let categoryIcon: String
+    let categoryColor: String
     let accountName: String
     let date: Date
     let notes: String?
@@ -50,16 +54,31 @@ struct AccountSnapshot: Sendable {
     let isDefault: Bool
 }
 
+struct RegisteredCategorySnapshot: Sendable {
+    let systemKey: String?
+    let displayName: String
+
+    init(systemKey: String?, displayName: String) {
+        self.systemKey = systemKey
+        self.displayName = displayName
+    }
+}
+
 // MARK: - SwiftData → Snapshot helpers
 
 extension Transaction {
     func asSnapshot() -> TransactionSnapshot {
-        TransactionSnapshot(
+        let rootCategory = category?.rootCategory
+        return TransactionSnapshot(
             id:              id,
             amount:          amount,
             typeRaw:         type.rawValue,
-            categoryName:    category?.name    ?? "Sem categoria",
-            subcategoryName: subcategory?.name,
+            categorySystemKey: category?.systemKey,
+            rootCategorySystemKey: category?.rootSystemKey,
+            categoryName:    category?.displayName ?? "Sem categoria",
+            subcategoryName: subcategory?.displayName,
+            categoryIcon:    rootCategory?.icon ?? category?.icon ?? "tag.fill",
+            categoryColor:   rootCategory?.color ?? category?.color ?? "#8E8E93",
             accountName:     account?.name     ?? "Sem conta",
             date:            date,
             notes:           notes,
@@ -83,7 +102,7 @@ extension Goal {
             title:        title,
             emoji:        emoji,
             targetAmount: targetAmount,
-            categoryName: category?.name,
+            categoryName: category?.displayName,
             monthlySpend: spend
         )
     }
@@ -106,10 +125,43 @@ struct FinanceContext: Sendable {
     let transactions:       [TransactionSnapshot]
     let goals:              [GoalSnapshot]
     let accounts:           [AccountSnapshot]
+    let categories:         [RegisteredCategorySnapshot]
     let currencyCode:       String
     let appLanguageCode:    String
     let localeIdentifier:   String
     let timeZoneIdentifier: String
+
+    init(
+        transactions: [TransactionSnapshot],
+        goals: [GoalSnapshot],
+        accounts: [AccountSnapshot],
+        categories: [RegisteredCategorySnapshot],
+        currencyCode: String,
+        appLanguageCode: String,
+        localeIdentifier: String,
+        timeZoneIdentifier: String
+    ) {
+        self.transactions = transactions
+        self.goals = goals
+        self.accounts = accounts
+        self.categories = categories
+        self.currencyCode = currencyCode
+        self.appLanguageCode = appLanguageCode
+        self.localeIdentifier = localeIdentifier
+        self.timeZoneIdentifier = timeZoneIdentifier
+    }
+
+    static func registeredExpenseCategories(from categories: [Category]) -> [RegisteredCategorySnapshot] {
+        categories
+            .filter { $0.parent == nil && ($0.type == .expense || $0.type == .both) }
+            .sorted { $0.sortOrder < $1.sortOrder }
+            .map {
+                RegisteredCategorySnapshot(
+                    systemKey: $0.systemKey,
+                    displayName: $0.displayName
+                )
+            }
+    }
 
     func formatCurrency(_ amount: Double) -> String {
         let f = NumberFormatter()
@@ -195,6 +247,15 @@ enum LocalAIService {
             }.joined(separator: "\n")
         }
 
+        let categoryLines: String
+        if context.categories.isEmpty {
+            categoryLines = "  (no categories registered)"
+        } else {
+            categoryLines = context.categories.map { category in
+                "  • \(category.displayName) [key: \(category.systemKey ?? "-")]"
+            }.joined(separator: "\n")
+        }
+
         return """
         You are the personal finance assistant inside the finAInce app.
         Your only job is to help the user monitor expenses, understand spending patterns,
@@ -236,6 +297,9 @@ enum LocalAIService {
 
         ## Registered accounts (use in criar_transacao → accountName)
         \(accountLines)
+
+        ## Registered expense categories (use in criar_transacao → categoryKey)
+        \(categoryLines)
 
         ## User context
         Current date/time : \(dateStr)
@@ -643,7 +707,13 @@ struct CriarTransacaoTool: Tool {
         @Guide(description: "Amount as a positive decimal in the user's currency.")
         var amount: Double
 
-        @Guide(description: "Best-matching expense category name (e.g. Supermercado, Restaurantes, Transporte, Saúde).")
+        @Guide(description: """
+        Best-matching registered expense category key from the system prompt list.
+        Prefer the exact key value when available. Leave empty only if no category fits.
+        """)
+        var categoryKey: String?
+
+        @Guide(description: "Best-matching expense category label for display if needed.")
         var category: String
 
         @Guide(description: "Establishment name or brief description of the purchase.")
@@ -683,6 +753,7 @@ struct CriarTransacaoTool: Tool {
         let draft = TransactionDraft(
             amount:       max(0.01, arguments.amount),
             typeRaw:      "expense",
+            categorySystemKey: arguments.categoryKey?.trimmingCharacters(in: .whitespacesAndNewlines),
             categoryName: arguments.category,
             placeName:    arguments.placeName,
             notes:        arguments.notes ?? "",

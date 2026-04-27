@@ -21,7 +21,7 @@ struct CategoryDrilldownView: View {
     @Environment(\.dismiss) private var dismiss
     @Query private var goals: [Goal]
     @Query private var allTransactions: [Transaction]   // histórico completo para o gráfico
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
 
     @State private var selectedHistoryMonth: Date?  = nil
     @State private var transactionToEdit: Transaction? = nil
@@ -106,9 +106,11 @@ struct CategoryDrilldownView: View {
     // Agrupa por subcategoria
     var bySubcategory: [(name: String, total: Double)] {
         var dict: [String: Double] = [:]
-        for t in categoryTransactions {
-            let key = t.subcategory?.name ?? t.category?.name ?? "Outros"
-            dict[key, default: 0] += t.amount
+        for transaction in categoryTransactions {
+            let key = transaction.subcategory?.displayName
+                ?? transaction.category?.displayName
+                ?? t("insight.fallback.uncategorized")
+            dict[key, default: 0] += transaction.amount
         }
         return dict.map { ($0.key, $0.value) }.sorted { $0.total > $1.total }
     }
@@ -125,7 +127,7 @@ struct CategoryDrilldownView: View {
                             .foregroundStyle(Color(hex: category.color))
                             .font(.title2)
                         VStack(alignment: .leading) {
-                            Text(category.name).font(.headline)
+                            Text(category.displayName).font(.headline)
                             Text(totalAmount.asCurrency(currencyCode))
                                 .font(.title2.bold())
                                 .foregroundStyle(.red)
@@ -171,7 +173,7 @@ struct CategoryDrilldownView: View {
                     }
                 }
             }
-            .navigationTitle(category.name)
+            .navigationTitle(category.displayName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

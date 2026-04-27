@@ -15,7 +15,17 @@ final class ShareViewController: UIViewController {
 
     private let appGroupID    = "group.Moura.finaince"
     private let imageFileName = "shared_image.jpg"
+    private let sharedAttachmentFileNameKey = "shared_attachment_file_name"
     private let urlScheme     = "finaince://shared-image"
+    private let supportedFileTypeIdentifiers = [
+        UTType.commaSeparatedText.identifier,
+        UTType.tabSeparatedText.identifier,
+        UTType.plainText.identifier,
+        UTType.text.identifier,
+        "org.openxmlformats.spreadsheetml.sheet",
+        "com.microsoft.excel.xls",
+        "com.microsoft.excel.xlsx"
+    ]
 
     // MARK: - UI
 
@@ -93,7 +103,7 @@ final class ShareViewController: UIViewController {
                 $0.hasItemConformingToTypeIdentifier(UTType.image.identifier)
             })
         else {
-            openAndComplete()
+            processSharedFileContent()
             return
         }
 
@@ -115,6 +125,39 @@ final class ShareViewController: UIViewController {
         }
     }
 
+    private func processSharedFileContent() {
+        guard
+            let item = extensionContext?.inputItems.first as? NSExtensionItem,
+            let attachment = item.attachments?.first(where: { provider in
+                supportedFileTypeIdentifiers.contains {
+                    provider.hasItemConformingToTypeIdentifier($0)
+                }
+            }),
+            let typeIdentifier = supportedFileTypeIdentifiers.first(where: {
+                attachment.hasItemConformingToTypeIdentifier($0)
+            })
+        else {
+            openAndComplete()
+            return
+        }
+
+        attachment.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { [weak self] url, _ in
+            guard let self else { return }
+
+            if let url {
+                _ = self.copyFileToAppGroup(url)
+                DispatchQueue.main.async { self.openAndComplete() }
+                return
+            }
+
+            attachment.loadItem(forTypeIdentifier: typeIdentifier) { [weak self] item, _ in
+                guard let self else { return }
+                _ = self.writeSharedItemToAppGroup(item, typeIdentifier: typeIdentifier)
+                DispatchQueue.main.async { self.openAndComplete() }
+            }
+        }
+    }
+
     @discardableResult
     private func writeToAppGroup(_ data: Data?) -> Bool {
         guard
@@ -126,6 +169,81 @@ final class ShareViewController: UIViewController {
 
         let dest = containerURL.appendingPathComponent(imageFileName)
         return (try? data.write(to: dest, options: .atomic)) != nil
+    }
+
+    @discardableResult
+    private func copyFileToAppGroup(_ sourceURL: URL) -> Bool {
+        guard
+            let containerURL = FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: appGroupID
+            ),
+            let defaults = UserDefaults(suiteName: appGroupID)
+        else { return false }
+
+        let fileName = sanitizedFileName(sourceURL.lastPathComponent)
+        let destinationURL = containerURL.appendingPathComponent(fileName)
+        try? FileManager.default.removeItem(at: destinationURL)
+
+        do {
+            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            defaults.set(fileName, forKey: sharedAttachmentFileNameKey)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    @discardableResult
+    private func writeSharedItemToAppGroup(_ item: NSSecureCoding?, typeIdentifier: String) -> Bool {
+        if let url = item as? URL {
+            return copyFileToAppGroup(url)
+        }
+
+        let data: Data?
+        if let raw = item as? Data {
+            data = raw
+        } else if let text = item as? String {
+            data = text.data(using: .utf8)
+        } else {
+            data = nil
+        }
+
+        guard
+            let data,
+            let containerURL = FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: appGroupID
+            ),
+            let defaults = UserDefaults(suiteName: appGroupID)
+        else { return false }
+
+        let fileName = fallbackFileName(for: typeIdentifier)
+        let destinationURL = containerURL.appendingPathComponent(fileName)
+        do {
+            try data.write(to: destinationURL, options: .atomic)
+            defaults.set(fileName, forKey: sharedAttachmentFileNameKey)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func sanitizedFileName(_ fileName: String) -> String {
+        let safeName = fileName
+            .components(separatedBy: CharacterSet(charactersIn: "/:\\"))
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return safeName.isEmpty ? "shared-file.txt" : safeName
+    }
+
+    private func fallbackFileName(for typeIdentifier: String) -> String {
+        if typeIdentifier == UTType.commaSeparatedText.identifier {
+            return "shared-file.csv"
+        }
+        if typeIdentifier == UTType.tabSeparatedText.identifier {
+            return "shared-file.tsv"
+        }
+        return "shared-file.txt"
     }
 
     /// Opens finAInce via URL scheme, then completes (dismisses) the extension.

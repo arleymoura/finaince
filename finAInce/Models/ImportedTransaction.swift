@@ -74,6 +74,7 @@ enum MatchDecision {
 
 /// A detected recurring payment pattern that matches an imported transaction.
 struct RecurringMatch {
+    let categorySystemKey: String?
     let categoryName: String
     let categoryIcon: String   // SF Symbol name
     let categoryColor: String  // hex or named color string stored in Category.color

@@ -5,6 +5,7 @@ enum RecurringMatcher {
     // MARK: - Pattern
 
     struct Pattern {
+        var categorySystemKey: String?
         var categoryName: String
         var categoryIcon: String
         var categoryColor: String
@@ -20,15 +21,24 @@ enum RecurringMatcher {
         // 1. Filter only expenses
         let expenses = transactions.filter { $0.isExpense }
 
-        // 2. Group by categoryName
+        // 2. Group by stable category identity
         var grouped: [String: [TransactionSnapshot]] = [:]
+        var categoryNames: [String: String] = [:]
+        var categoryIcons: [String: String] = [:]
+        var categoryColors: [String: String] = [:]
+        var categorySystemKeys: [String: String?] = [:]
         for tx in expenses {
-            grouped[tx.categoryName, default: []].append(tx)
+            let groupKey = tx.rootCategorySystemKey ?? tx.categorySystemKey ?? tx.categoryName
+            grouped[groupKey, default: []].append(tx)
+            categoryNames[groupKey] = tx.categoryName
+            categoryIcons[groupKey] = tx.categoryIcon
+            categoryColors[groupKey] = tx.categoryColor
+            categorySystemKeys[groupKey] = tx.rootCategorySystemKey ?? tx.categorySystemKey
         }
 
         var patterns: [Pattern] = []
 
-        for (categoryName, txs) in grouped {
+        for (groupKey, txs) in grouped {
             // 3. Skip if fewer than 2 distinct months
             let cal = Calendar.current
             let distinctMonths = Set(txs.map { tx -> String in
@@ -50,9 +60,10 @@ enum RecurringMatcher {
                 let maxVariance = cluster.map { abs($0.amount - avgAmount) }.max() ?? 0.0
 
                 let pattern = Pattern(
-                    categoryName: categoryName,
-                    categoryIcon: "",
-                    categoryColor: "",
+                    categorySystemKey: categorySystemKeys[groupKey] ?? categoryNames[groupKey],
+                    categoryName: categoryNames[groupKey] ?? groupKey,
+                    categoryIcon: categoryIcons[groupKey] ?? "tag.fill",
+                    categoryColor: categoryColors[groupKey] ?? "#8E8E93",
                     typicalAmount: avgAmount,
                     typicalDay: avgDay,
                     occurrences: cluster.count,
@@ -114,6 +125,7 @@ enum RecurringMatcher {
         guard let best = bestMatch else { return nil }
 
         return RecurringMatch(
+            categorySystemKey: best.pattern.categorySystemKey,
             categoryName:  best.pattern.categoryName,
             categoryIcon:  best.pattern.categoryIcon,
             categoryColor: best.pattern.categoryColor,

@@ -15,13 +15,14 @@ enum CategoryType: String, Codable, CaseIterable {
 
 @Model
 final class Category {
-    @Attribute(.unique) var id: UUID
-    var name: String
-    var icon: String
-    var color: String
-    var type: CategoryType
-    var isSystem: Bool
-    var sortOrder: Int
+    var id: UUID = UUID()
+    var name: String = ""
+    var systemKey: String?
+    var icon: String = ""
+    var color: String = ""
+    var type: CategoryType = CategoryType.expense
+    var isSystem: Bool = false
+    var sortOrder: Int = 0
 
     var family: Family?
 
@@ -29,13 +30,20 @@ final class Category {
     var parent: Category?
 
     @Relationship(deleteRule: .cascade, inverse: \Category.parent)
-    var subcategories: [Category] = []
+    var subcategories: [Category]?
 
     @Relationship(deleteRule: .nullify, inverse: \Transaction.category)
-    var transactions: [Transaction] = []
+    var transactions: [Transaction]?
+
+    @Relationship(deleteRule: .nullify, inverse: \Transaction.subcategory)
+    var subcategoryTransactions: [Transaction]?
+
+    @Relationship(deleteRule: .nullify, inverse: \Goal.category)
+    var goals: [Goal]?
 
     init(
         name: String,
+        systemKey: String? = nil,
         icon: String,
         color: String,
         type: CategoryType,
@@ -45,11 +53,24 @@ final class Category {
     ) {
         self.id = UUID()
         self.name = name
+        self.systemKey = systemKey
         self.icon = icon
         self.color = color
         self.type = type
         self.isSystem = isSystem
         self.sortOrder = sortOrder
         self.parent = parent
+    }
+
+    var displayName: String {
+        DefaultCategories.localizedName(for: systemKey, fallback: name)
+    }
+
+    var rootCategory: Category {
+        parent ?? self
+    }
+
+    var rootSystemKey: String? {
+        rootCategory.systemKey
     }
 }

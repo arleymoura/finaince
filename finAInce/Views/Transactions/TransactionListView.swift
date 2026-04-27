@@ -5,12 +5,13 @@ import Charts
 
 struct TransactionListView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query(sort: \Transaction.date, order: .reverse) private var transactions: [Transaction]
     @Query(sort: \Account.createdAt) private var accounts: [Account]
     @Query(sort: \Category.sortOrder) private var categories: [Category]
     @Query private var goals: [Goal]
     @Query private var aiSettingsList: [AISettings]
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
     @AppStorage("user.adultsCount") private var adultsCount = 0
     @AppStorage("user.childrenCount") private var childrenCount = 0
     
@@ -68,11 +69,11 @@ struct TransactionListView: View {
 
     private var categoryFilterTitle: String {
         if let selectedCategory, let selectedSubcategory {
-            return "\(selectedCategory.name) / \(selectedSubcategory.name)"
+            return "\(selectedCategory.displayName) / \(selectedSubcategory.displayName)"
         }
 
         if let selectedCategory {
-            return selectedCategory.name
+            return selectedCategory.displayName
         }
 
         return t("transaction.category")
@@ -89,6 +90,26 @@ struct TransactionListView: View {
     private var selectedAccount: Account? {
         guard let selectedAccountId else { return nil }
         return accounts.first { $0.id == selectedAccountId }
+    }
+
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
+    }
+
+    private let regularContentMaxWidth: CGFloat = 1100
+
+    private var totalFilteredExpenses: Double {
+        cachedFiltered
+            .filter { $0.type == .expense }
+            .reduce(0.0) { $0 + $1.amount }
+    }
+
+    private var paidTransactionsCount: Int {
+        cachedFiltered.filter(\.isPaid).count
+    }
+
+    private var pendingTransactionsCount: Int {
+        cachedFiltered.filter { !$0.isPaid }.count
     }
 
     private var hasActiveFilters: Bool {
@@ -131,8 +152,8 @@ struct TransactionListView: View {
             if !search.isEmpty {
                 let matchPlace    = tx.placeName?.lowercased().contains(search)  ?? false
                 let matchNotes    = tx.notes?.lowercased().contains(search)       ?? false
-                let matchCat      = tx.category?.name.lowercased().contains(search)    ?? false
-                let matchSub      = tx.subcategory?.name.lowercased().contains(search) ?? false
+                let matchCat      = tx.category.map { $0.name.lowercased().contains(search) || $0.displayName.lowercased().contains(search) } ?? false
+                let matchSub      = tx.subcategory.map { $0.name.lowercased().contains(search) || $0.displayName.lowercased().contains(search) } ?? false
                 let matchAccount  = tx.account?.name.lowercased().contains(search)     ?? false
                 guard matchPlace || matchNotes || matchCat || matchSub || matchAccount else { return false }
             }
@@ -175,35 +196,17 @@ struct TransactionListView: View {
         NavigationStack {
             GeometryReader { proxy in
                 ZStack {
-                    Color(.systemGroupedBackground)
+                    WorkspaceBackground(isRegularLayout: isRegularLayout)
                         .ignoresSafeArea()
 
-                    VStack(spacing: -15) {
+                    VStack(spacing: isRegularLayout ? 0 : -15) {
                         transactionHeader(topInset: proxy.safeAreaInsets.top)
                             .ignoresSafeArea(edges: .top)
 
                         VStack(spacing: 0) {
-                            inlineFilterBar
-                                .background(Color(.systemGroupedBackground))
-
-                            Divider()
-
-                            if filteredTransactions.isEmpty {
-                                ScrollView {
-                                    emptyState
-                                        .frame(maxWidth: .infinity, minHeight: proxy.size.height * 0.55)
-                                }
-                                .refreshable {
-                                    refreshListCache()
-                                }
-                            } else if viewMode == .charts {
-                                transactionChartsView
-                            } else {
-                                transactionList
-                                    .transactionFTUTarget(.transactions)
-                            }
+                            contentArea(for: proxy.size.height)
                         }
-                        .padding(.top, -44)
+                        .padding(.top, isRegularLayout ? 0 : -44)
                     }
                 }
                 // FTU overlay — drawn on top of everything inside the GeometryReader
@@ -317,7 +320,7 @@ struct TransactionListView: View {
                             ProgressView()
                                 .scaleEffect(1.2)
 
-                            Text("Gerando análise...")
+                            Text(t("transaction.generatingAnalysis"))
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
@@ -326,6 +329,52 @@ struct TransactionListView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 16))
                     }
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func contentArea(for availableHeight: CGFloat) -> some View {
+        if isRegularLayout {
+            VStack(spacing: 0) {
+                inlineFilterBar
+                    .background(WorkspaceBackground(isRegularLayout: isRegularLayout))
+
+                Divider()
+
+                if filteredTransactions.isEmpty {
+                    ScrollView {
+                        emptyState
+                            .frame(maxWidth: .infinity, minHeight: availableHeight * 0.55)
+                    }
+                    .refreshable {
+                        refreshListCache()
+                    }
+                } else {
+                    transactionsWorkspaceView
+                }
+            }
+            .frame(maxWidth: regularContentMaxWidth)
+            .frame(maxWidth: .infinity)
+        } else {
+            inlineFilterBar
+                .background(WorkspaceBackground(isRegularLayout: isRegularLayout))
+
+            Divider()
+
+            if filteredTransactions.isEmpty {
+                ScrollView {
+                    emptyState
+                        .frame(maxWidth: .infinity, minHeight: availableHeight * 0.55)
+                }
+                .refreshable {
+                    refreshListCache()
+                }
+            } else if viewMode == .charts {
+                transactionChartsView
+            } else {
+                transactionList
+                    .transactionFTUTarget(.transactions)
             }
         }
     }
@@ -413,6 +462,19 @@ struct TransactionListView: View {
     // MARK: - Header
 
     private func transactionHeader(topInset: CGFloat) -> some View {
+        Group {
+            if isRegularLayout {
+                regularTransactionHeader(topInset: topInset)
+            } else {
+                compactTransactionHeader(topInset: topInset)
+            }
+        }
+        .sheet(isPresented: $showCSVImport) {
+            CSVImportInfoView()
+        }
+    }
+
+    private func compactTransactionHeader(topInset: CGFloat) -> some View {
         VStack(spacing: 18) {
             HStack(alignment: .center, spacing: 12) {
                 Text(t("transaction.title"))
@@ -474,9 +536,132 @@ struct TransactionListView: View {
             )
         )
         .shadow(color: Color.accentColor.opacity(0.22), radius: 10, x: 0, y: 5)
-        .sheet(isPresented: $showCSVImport) {
-            CSVImportInfoView()
+    }
+
+    private func regularTransactionHeader(topInset: CGFloat) -> some View {
+        VStack(spacing: 18) {
+            HStack(alignment: .top, spacing: 18) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(t("transaction.title"))
+                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+
+                    Text("Sua visao de gastos de \(monthTitle.lowercased())")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.78))
+                }
+
+                Spacer(minLength: 16)
+
+                HStack(spacing: 12) {
+                    monthNavigationButton(systemName: "chevron.left") {
+                        moveMonth(by: -1)
+                    }
+
+                    Text(monthTitle)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.95))
+                        .padding(.horizontal, 14)
+                        .frame(height: 38)
+                        .background(.white.opacity(0.12))
+                        .clipShape(Capsule())
+
+                    monthNavigationButton(systemName: "chevron.right") {
+                        moveMonth(by: 1)
+                    }
+                }
+            }
+
+            HStack(spacing: 14) {
+                transactionMetricCard(
+                    title: t("transaction.title"),
+                    value: totalFilteredExpenses.asCurrency(currencyCode),
+                    icon: "eurosign.circle.fill",
+                    tint: .white
+                )
+                transactionMetricCard(
+                    title: t("transaction.paidPlural"),
+                    value: "\(paidTransactionsCount)",
+                    icon: "checkmark.circle.fill",
+                    tint: Color.green.opacity(0.95)
+                )
+                transactionMetricCard(
+                    title: t("transaction.pendingPlural"),
+                    value: "\(pendingTransactionsCount)",
+                    icon: "clock.fill",
+                    tint: Color.orange.opacity(0.95)
+                )
+            }
         }
+        .padding(.horizontal, 24)
+        .padding(.top, topInset + 16)
+        .padding(.bottom, 24)
+        .frame(maxWidth: 1100)
+        .frame(maxWidth: .infinity)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color.accentColor.opacity(0.95),
+                    Color.accentColor.opacity(0.65)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .clipShape(
+            UnevenRoundedRectangle(cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24))
+        )
+        .shadow(color: Color.accentColor.opacity(0.24), radius: 12, x: 0, y: 6)
+    }
+
+    private func monthNavigationButton(systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.subheadline.bold())
+                .foregroundStyle(.white.opacity(0.95))
+                .frame(width: 38, height: 38)
+                .background(.white.opacity(0.15))
+                .clipShape(Circle())
+        }
+    }
+
+    private func transactionMetricCard(title: String, value: String, icon: String, tint: Color) -> some View {
+        HStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(.white.opacity(0.16))
+                    .frame(width: 46, height: 46)
+
+                Image(systemName: icon)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(tint)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .lineLimit(1)
+
+                Text(value)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity)
+        .background(.white.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(.white.opacity(0.1), lineWidth: 1)
+        )
     }
 
     private var transactionMonthSelector: some View {
@@ -532,12 +717,6 @@ struct TransactionListView: View {
     }
 
     private var filteredSummaryRow: some View {
-        let expenses = cachedFiltered
-            .filter { $0.type == .expense }
-            .reduce(0.0) { $0 + $1.amount }
-        let transfers = cachedFiltered
-            .filter { $0.type == .transfer }
-            .reduce(0.0) { $0 + $1.amount }
         let count = cachedFiltered.count
 
         return HStack(alignment: .center, spacing: 0) {
@@ -546,7 +725,7 @@ struct TransactionListView: View {
                 Text(t("transaction.title"))
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.white.opacity(0.65))
-                Text(expenses.asCurrency(currencyCode))
+                Text(totalFilteredExpenses.asCurrency(currencyCode))
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(.white)
                     .contentTransition(.numericText())
@@ -565,7 +744,11 @@ struct TransactionListView: View {
                     .contentTransition(.numericText())
             }
         }
-        .overlay { viewModeToggle }
+        .overlay {
+            if !isRegularLayout {
+                viewModeToggle
+            }
+        }
         .animation(.easeInOut(duration: 0.2), value: count)
     }
 
@@ -631,75 +814,101 @@ struct TransactionListView: View {
 
     private var inlineFilterBar: some View {
         VStack(spacing: 0) {
-            // ── Linha 1: 3 dropdowns de largura igual + ícone de busca ──
-            HStack(spacing: 8) {
-                accountDropdown
-                    .frame(maxWidth: .infinity)
+            if isRegularLayout {
+                HStack(spacing: 10) {
+                    accountDropdown
+                        .frame(maxWidth: .infinity)
 
-                categoryDropdown
-                    .frame(maxWidth: .infinity)
+                    categoryDropdown
+                        .frame(maxWidth: .infinity)
 
-                statusDropdown
-                    .frame(maxWidth: .infinity)
+                    statusDropdown
+                        .frame(maxWidth: .infinity)
 
-                // Search toggle
-                Button {
-                    withAnimation(.spring(duration: 0.25)) {
-                        isSearchVisible.toggle()
-                        if !isSearchVisible {
-                            searchText = ""
-                            isSearchFocused = false
+                    searchField
+                        .frame(maxWidth: .infinity)
+
+                    if hasActiveFilters {
+                        Button {
+                            withAnimation(.spring(duration: 0.25)) { clearFilters() }
+                        } label: {
+                            Text(t("common.clear"))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .padding(.horizontal, 6)
                         }
+                        .buttonStyle(.plain)
                     }
-                } label: {
-                    Image(systemName: isSearchVisible || !searchText.isEmpty
-                          ? "magnifyingglass.circle.fill"
-                          : "magnifyingglass")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(isSearchVisible || !searchText.isEmpty
-                                         ? Color.accentColor : Color(.tertiaryLabel))
-                        .frame(width: 36, height: 36)
-                        .background(Color(.secondarySystemBackground))
-                        .clipShape(Circle())
                 }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, hasActiveFilters || isSearchVisible ? 6 : 10)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+            } else {
+                HStack(spacing: 8) {
+                    accountDropdown
+                        .frame(maxWidth: .infinity)
 
-            // ── Linha 2: resumo dos filtros ativos + limpar (condicional) ──
-            if hasActiveFilters {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(Color.accentColor)
-                        .frame(width: 6, height: 6)
-                    Text(activeFiltersSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Spacer(minLength: 4)
+                    categoryDropdown
+                        .frame(maxWidth: .infinity)
+
+                    statusDropdown
+                        .frame(maxWidth: .infinity)
+
                     Button {
-                        withAnimation(.spring(duration: 0.25)) { clearFilters() }
+                        withAnimation(.spring(duration: 0.25)) {
+                            isSearchVisible.toggle()
+                            if !isSearchVisible {
+                                searchText = ""
+                                isSearchFocused = false
+                            }
+                        }
                     } label: {
-                        Text(t("common.clear"))
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(Color.accentColor)
+                        Image(systemName: isSearchVisible || !searchText.isEmpty
+                              ? "magnifyingglass.circle.fill"
+                              : "magnifyingglass")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(isSearchVisible || !searchText.isEmpty
+                                             ? Color.accentColor : Color(.tertiaryLabel))
+                            .frame(width: 36, height: 36)
+                            .background(Color(.secondarySystemBackground))
+                            .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 16)
-                .padding(.bottom, isSearchVisible ? 4 : 8)
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
+                .padding(.top, 10)
+                .padding(.bottom, hasActiveFilters || isSearchVisible ? 6 : 10)
 
-            // ── Linha 3: campo de busca (condicional) ──
-            if isSearchVisible {
-                searchField
+                if hasActiveFilters {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color.accentColor)
+                            .frame(width: 6, height: 6)
+                        Text(activeFiltersSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 4)
+                        Button {
+                            withAnimation(.spring(duration: 0.25)) { clearFilters() }
+                        } label: {
+                            Text(t("common.clear"))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                    }
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
+                    .padding(.bottom, isSearchVisible ? 4 : 8)
                     .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
+                if isSearchVisible {
+                    searchField
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 8)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
             }
         }
         .animation(.spring(duration: 0.25), value: hasActiveFilters)
@@ -796,7 +1005,7 @@ struct TransactionListView: View {
         }
         .font(.subheadline)
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, isRegularLayout ? 8 : 10)
         .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
@@ -1050,7 +1259,7 @@ struct TransactionListView: View {
         let grouped = Dictionary(grouping: expenses) {
             $0.placeName?.trimmingCharacters(in: .whitespaces).isEmpty == false
                 ? $0.placeName!
-                : ($0.category?.name ?? "Outros")
+                : ($0.category?.displayName ?? t("insight.fallback.uncategorized"))
         }
         let palette: [Color] = [.blue, .purple, .orange, .green, .pink, .teal, .indigo, .red]
         let all = grouped
@@ -1072,12 +1281,80 @@ struct TransactionListView: View {
 
     private var transactionChartsView: some View {
         ScrollView {
-            VStack(spacing: 16) {
-                PieChartCardView(title: t("transaction.byCategory"), slices: categorySlices, currencyCode: currencyCode)
-                PieChartCardView(title: t("transaction.byMerchant"), slices: merchantSlices, currencyCode: currencyCode)
-            }
+            transactionChartsContent
             .padding(16)
         }
+    }
+
+    private var transactionChartsContent: some View {
+        VStack(spacing: 16) {
+            SpendingHistoryCard(transactions: transactions)
+            PieChartCardView(title: t("transaction.byCategory"), slices: categorySlices, currencyCode: currencyCode)
+            PieChartCardView(title: t("transaction.byMerchant"), slices: merchantSlices, currencyCode: currencyCode)
+        }
+    }
+
+    private var transactionsWorkspaceView: some View {
+        HStack(alignment: .top, spacing: 20) {
+            transactionListCard
+                .frame(minWidth: 0, maxWidth: .infinity)
+
+            transactionsInsightsColumn
+                .frame(width: 420)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 18)
+        .padding(.bottom, 24)
+        .background(WorkspaceBackground(isRegularLayout: true))
+    }
+
+    private var transactionListCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(t("transaction.title"))
+                        .font(.headline.weight(.semibold))
+                    Text("\(filteredTransactions.count) \(filteredTransactions.count == 1 ? t("transaction.singular") : t("transaction.plural"))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .padding(.bottom, 10)
+
+            Divider()
+
+            transactionList
+                .transactionFTUTarget(.transactions)
+                .clipShape(RoundedRectangle(cornerRadius: 24))
+        }
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.black.opacity(0.05), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 16, x: 0, y: 10)
+    }
+
+    private var transactionsInsightsColumn: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                cumulativeChartCard
+                transactionChartsContent
+            }
+            .padding(20)
+        }
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.black.opacity(0.05), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 16, x: 0, y: 10)
     }
 
     // MARK: - List
@@ -1094,7 +1371,9 @@ struct TransactionListView: View {
                     .id(group.date)
                 }
             }
-            .listStyle(.insetGrouped)
+            .modifier(TransactionListStyleModifier(isRegularLayout: isRegularLayout))
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
             .scrollDismissesKeyboard(.immediately)
             .refreshable {
                 refreshListCache()
@@ -1108,6 +1387,7 @@ struct TransactionListView: View {
             .onChange(of: selectedYear) { _, _ in
                 scrollToSelectedPeriod(using: proxy)
             }
+            .modifier(TransactionListRegularStyling(isRegularLayout: isRegularLayout))
         }
     }
 
@@ -1133,7 +1413,7 @@ struct TransactionListView: View {
         let comparison = cachedComparisons[transaction.id] ?? monthlyComparison(for: transaction)
         let badgeTapAction: (() -> Void)? = comparison.map { cmp in
             {
-                let name      = transaction.placeName ?? transaction.category?.name ?? "serviço recorrente"
+                let name      = transaction.placeName ?? transaction.category?.displayName ?? t("insight.fallback.recurringExpense")
                 let amount    = transaction.amount.asCurrency(currencyCode)
                 let prevTx    = previousMonthlyOccurrence(for: transaction)
                 let prevAmt   = prevTx?.amount.asCurrency(currencyCode) ?? "desconhecido"
@@ -1457,7 +1737,7 @@ private struct TransactionCategoryFilterSheet: View {
                                 .padding(.horizontal)
 
                             LazyVGrid(columns: columns, spacing: 12) {
-                                ForEach(expandedCategory.subcategories.sorted { $0.sortOrder < $1.sortOrder }) { subcategory in
+                                ForEach((expandedCategory.subcategories ?? []).sorted { $0.sortOrder < $1.sortOrder }) { subcategory in
                                     CategoryGridItem(
                                         category: subcategory,
                                         isSelected: selectedSubcategory?.id == subcategory.id,
@@ -1873,6 +2153,32 @@ private struct PieChartCardView: View {
     }
 }
 
+private struct TransactionListRegularStyling: ViewModifier {
+    let isRegularLayout: Bool
+
+    func body(content: Content) -> some View {
+        if isRegularLayout {
+            content
+                .listRowSpacing(8)
+                .environment(\.defaultMinListRowHeight, 64)
+        } else {
+            content
+        }
+    }
+}
+
+private struct TransactionListStyleModifier: ViewModifier {
+    let isRegularLayout: Bool
+
+    func body(content: Content) -> some View {
+        if isRegularLayout {
+            content.listStyle(.plain)
+        } else {
+            content.listStyle(.insetGrouped)
+        }
+    }
+}
+
 struct MonthlyRecurrenceComparison {
     enum Direction {
         case increase
@@ -1909,7 +2215,7 @@ struct TransactionRowView: View {
     var monthlyComparison: MonthlyRecurrenceComparison? = nil
     /// Called when the user taps the price-change badge to ask the AI.
     var onComparisonBadgeTap: (() -> Void)? = nil
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
 
     var body: some View {
         // Subcategoria tem prioridade sobre categoria para ícone e cor
@@ -1932,7 +2238,7 @@ struct TransactionRowView: View {
                         Text(place)
                             .foregroundStyle(.primary)
                     } else {
-                        Text(transaction.category?.name ?? "Sem estabelecimento")
+                        Text(transaction.category?.displayName ?? t("transaction.noPlace"))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -1977,7 +2283,7 @@ struct TransactionRowView: View {
                     }
 
                     // Recorrente
-                    if transaction.recurrenceType == .monthly {
+                    if transaction.recurrenceType == .monthly || transaction.recurrenceType == .annual {
                         HStack(spacing: 3) {
                             Image(systemName: "repeat")
                                 .font(.system(size: 12))
@@ -2022,12 +2328,12 @@ struct TransactionRowView: View {
                 }
                 .foregroundStyle(transaction.isPaid ? Color.green : Color.orange)
 
-                if !transaction.receiptAttachments.isEmpty {
+                if !(transaction.receiptAttachments ?? []).isEmpty {
                     HStack(spacing: 3) {
                         Image(systemName: "paperclip")
                             .font(.system(size: 9, weight: .semibold))
-                        if transaction.receiptAttachments.count > 1 {
-                            Text("\(transaction.receiptAttachments.count)")
+                        if (transaction.receiptAttachments ?? []).count > 1 {
+                            Text("\((transaction.receiptAttachments ?? []).count)")
                                 .font(.caption2)
                         }
                     }
@@ -2083,25 +2389,37 @@ private struct FinancialAnalysisEducationDialog: View {
             VStack(spacing: 0) {
 
                 // Header
-                VStack(spacing: 8) {
+                VStack(spacing: 10) {
                     HStack(spacing: 12) {
                         Image(systemName: "chart.pie.fill")
                             .font(.title2.weight(.semibold))
                             .foregroundStyle(.white)
-                            .frame(width: 40, height: 40)
-                            .background(.white.opacity(0.2))
-                            .clipShape(RoundedRectangle(cornerRadius: 11))
+                            .frame(width: 44, height: 44)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(.white.opacity(0.14))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .stroke(.white.opacity(0.18), lineWidth: 1)
+                                    )
+                            )
 
                         Image(systemName: "arrow.right")
                             .font(.subheadline.weight(.bold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(.white.opacity(0.92))
 
                         Image(systemName: "sparkles")
                             .font(.title2.weight(.semibold))
                             .foregroundStyle(.white)
-                            .frame(width: 40, height: 40)
-                            .background(.white.opacity(0.2))
-                            .clipShape(RoundedRectangle(cornerRadius: 11))
+                            .frame(width: 44, height: 44)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(.white.opacity(0.14))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .stroke(.white.opacity(0.18), lineWidth: 1)
+                                    )
+                            )
                     }
 
                     Text(t("transaction.aiAnalysisHowItWorksTitle"))
@@ -2115,10 +2433,15 @@ private struct FinancialAnalysisEducationDialog: View {
                         .multilineTextAlignment(.center)
                 }
                 .padding(.horizontal, 20)
-                .padding(.vertical, 18)
+                .padding(.vertical, 22)
                 .frame(maxWidth: .infinity)
-                .ignoresSafeArea(.container, edges: .horizontal)
-                .background(Color.accentColor)
+                .background(
+                    LinearGradient(
+                        colors: [Color.accentColor, Color.blue.opacity(0.88)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
 
                 // Content
                 VStack(spacing: 20) {

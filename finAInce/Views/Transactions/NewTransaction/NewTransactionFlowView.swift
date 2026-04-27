@@ -17,6 +17,7 @@ final class NewTransactionState {
     var installmentTotal: Int = 2
     var notes: String = ""
     var receiptDrafts: [ReceiptDraftAttachment] = []
+    var costCenter: CostCenter? = nil
     /// Sinaliza que o fluxo deve pular direto para o step de confirmação (step 4).
     /// Usado pelo scanner de recibos após pré-preencher os dados.
     var jumpToReview: Bool = false
@@ -29,9 +30,23 @@ struct NewTransactionFlowView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
-    @State private var step = 1
-    @State private var state = NewTransactionState()
+    @State private var step: Int
+    @State private var state: NewTransactionState
     @State private var didSave = false
+    @State private var navigationDirection: NavigationDirection = .forward
+
+    /// Inicia o fluxo com estado pré-preenchido e pula direto para a revisão (step 4).
+    init(initialState: NewTransactionState, jumpToReview: Bool = true) {
+        _state = State(initialValue: initialState)
+        _step = State(initialValue: jumpToReview ? 4 : 1)
+    }
+
+    /// Inicia o fluxo do zero (behavior padrão).
+    init(startWithScanner: Bool = false) {
+        self.startWithScanner = startWithScanner
+        _state = State(initialValue: NewTransactionState())
+        _step = State(initialValue: 1)
+    }
 
     var body: some View {
         NavigationStack {
@@ -49,14 +64,12 @@ struct NewTransactionFlowView: View {
                     case 2: Step2LocationView(state: state)
                     case 3: Step3CategoryView(state: state)
                     case 4: Step4DetailsView(state: state,
+                                             onBack: goBack,
                                              onSave: saveTransaction)
                     default: EmptyView()
                     }
                 }
-                .transition(.asymmetric(
-                    insertion: .move(edge: .trailing),
-                    removal: .move(edge: .leading)
-                ))
+                .transition(contentTransition)
                 .animation(.easeInOut(duration: 0.25), value: step)
 
                 // Botões de navegação (exceto Step 4 que tem seu próprio botão Salvar)
@@ -84,6 +97,7 @@ struct NewTransactionFlowView: View {
             state.jumpToReview = false
             // Pequeno delay para deixar o sheet do scanner fechar antes da transição
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                navigationDirection = .forward
                 withAnimation(.easeInOut(duration: 0.25)) { step = 4 }
             }
         }
@@ -94,7 +108,7 @@ struct NewTransactionFlowView: View {
     private var navigationButtons: some View {
         HStack(spacing: 12) {
             if step > 1 {
-                Button { step -= 1 } label: {
+                Button(action: goBack) { 
                     Text(t("common.back"))
                         .font(.headline)
                         .foregroundStyle(.primary)
@@ -105,7 +119,7 @@ struct NewTransactionFlowView: View {
                 }
                 .buttonStyle(.plain)
             }
-            Button { step += 1 } label: {
+            Button(action: goForward) {
                 Text(t("common.next"))
                     .font(.headline)
                     .foregroundStyle(.white)
@@ -121,12 +135,41 @@ struct NewTransactionFlowView: View {
         .padding(.bottom, 12)
     }
 
+    private var contentTransition: AnyTransition {
+        switch navigationDirection {
+        case .forward:
+            return .asymmetric(
+                insertion: .move(edge: .trailing),
+                removal: .move(edge: .leading)
+            )
+        case .backward:
+            return .asymmetric(
+                insertion: .move(edge: .leading),
+                removal: .move(edge: .trailing)
+            )
+        }
+    }
+
     private var canAdvance: Bool {
         switch step {
         case 1: return state.amount > 0
         case 2: return true   // local é opcional
         case 3: return state.category != nil
         default: return true
+        }
+    }
+
+    private func goForward() {
+        navigationDirection = .forward
+        withAnimation(.easeInOut(duration: 0.25)) {
+            step += 1
+        }
+    }
+
+    private func goBack() {
+        navigationDirection = .backward
+        withAnimation(.easeInOut(duration: 0.25)) {
+            step -= 1
         }
     }
 
@@ -154,9 +197,10 @@ struct NewTransactionFlowView: View {
             installmentTotal: state.recurrenceType == .installment ? state.installmentTotal : nil,
             isPaid: state.isPaid
         )
-        transaction.account = state.account
-        transaction.category = state.category
-        transaction.subcategory = state.subcategory
+        transaction.account      = state.account
+        transaction.category     = state.category
+        transaction.subcategory  = state.subcategory
+        transaction.costCenterId = state.costCenter?.id
 
         modelContext.insert(transaction)
         _ = try? ReceiptAttachmentStore.persistDrafts(state.receiptDrafts, to: transaction, in: modelContext)
@@ -170,6 +214,9 @@ struct NewTransactionFlowView: View {
         case .monthly:
             Transaction.generateMonthlyRecurrences(from: transaction,
                                                    in: modelContext)
+        case .annual:
+            Transaction.generateAnnualRecurrences(from: transaction,
+                                                  in: modelContext)
         case .none:
             break
         }
@@ -251,4 +298,9 @@ private struct ProgressStep {
     let number: Int
     let icon: String
     let titleKey: String
+}
+
+private enum NavigationDirection {
+    case forward
+    case backward
 }

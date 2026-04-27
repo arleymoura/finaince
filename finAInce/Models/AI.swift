@@ -78,7 +78,6 @@ enum AIProvider: String, Codable, CaseIterable, Identifiable {
     var requiresAPIKey: Bool { self != .local }
 
     /// Provedores que aceitam imagens nativas na API (vision / multimodal).
-    /// Groq (LLaMA) e DeepSeek não têm suporte de visão nos modelos padrão.
     var supportsVision: Bool {
         switch self {
         case .openai, .anthropic, .gemini: return true
@@ -116,10 +115,10 @@ enum AnalysisType: String, Codable {
 
 @Model
 final class AISettings {
-    @Attribute(.unique) var id: UUID
-    var provider: AIProvider
-    var model: String
-    var isConfigured: Bool
+    var id: UUID = UUID()
+    var provider: AIProvider = AIProvider.local
+    var model: String = ""
+    var isConfigured: Bool = false
     // api_key armazenada exclusivamente no iOS Keychain — nunca aqui
 
     var family: Family?
@@ -136,12 +135,12 @@ final class AISettings {
 
 @Model
 final class AIAnalysis {
-    @Attribute(.unique) var id: UUID
-    var monthRef: String       // ex: "2026-04"
-    var generatedAt: Date
-    var provider: String
-    var type: AnalysisType
-    var content: String        // resposta em markdown
+    var id: UUID = UUID()
+    var monthRef: String = ""
+    var generatedAt: Date = Date()
+    var provider: String = ""
+    var type: AnalysisType = AnalysisType.monthlySummary
+    var content: String = ""
 
     var family: Family?
 

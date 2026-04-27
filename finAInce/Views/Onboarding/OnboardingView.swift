@@ -9,8 +9,8 @@ struct FixedExpenseItem: Identifiable {
     let icon: String
     let iconColor: Color
     let description: String
-    let categoryName: String
-    let subcategoryName: String?
+    let categorySystemKey: String
+    let subcategorySystemKey: String?
 }
 
 extension FixedExpenseItem {
@@ -18,45 +18,45 @@ extension FixedExpenseItem {
         .init(id: "aluguel",    name: "Aluguel",
               icon: "house.fill",           iconColor: Color(hex: "#5E5CE6"),
               description: "Pagamento mensal de aluguel",
-              categoryName: "Moradia",   subcategoryName: "Aluguel"),
+              categorySystemKey: "housing",   subcategorySystemKey: "housing.rent"),
         .init(id: "condominio", name: "Condomínio",
               icon: "building.2.fill",      iconColor: Color(hex: "#8E8E93"),
               description: "Taxa condominial",
-              categoryName: "Moradia",   subcategoryName: "Condomínio"),
+              categorySystemKey: "housing",   subcategorySystemKey: "housing.condo"),
         .init(id: "agua",       name: "Água",
               icon: "drop.fill",            iconColor: Color(hex: "#32ADE6"),
               description: "Conta de água",
-              categoryName: "Moradia",   subcategoryName: "Água"),
+              categorySystemKey: "housing",   subcategorySystemKey: "housing.water"),
         .init(id: "luz",        name: "Luz",
               icon: "bolt.fill",            iconColor: Color(hex: "#FF9F0A"),
               description: "Conta de energia elétrica",
-              categoryName: "Moradia",   subcategoryName: "Energia"),
+              categorySystemKey: "housing",   subcategorySystemKey: "housing.energy"),
         .init(id: "internet",   name: "Internet",
               icon: "wifi",                 iconColor: Color(hex: "#30B0C7"),
               description: "Internet fixa",
-              categoryName: "Moradia",   subcategoryName: "Internet"),
+              categorySystemKey: "housing",   subcategorySystemKey: "housing.internet"),
         .init(id: "telefone",   name: "Telefone",
               icon: "iphone",              iconColor: Color(hex: "#636366"),
               description: "Plano de celular",
-              categoryName: "Moradia",   subcategoryName: nil),
+              categorySystemKey: "housing",   subcategorySystemKey: "housing.phone"),
         .init(id: "tv",         name: "TV / Streaming",
               icon: "tv.fill",             iconColor: Color(hex: "#BF5AF2"),
               description: "TV a cabo ou streaming",
-              categoryName: "Moradia",   subcategoryName: "TV / Streaming"),
+              categorySystemKey: "housing",   subcategorySystemKey: "housing.tvStreaming"),
         .init(id: "combo",      name: "Combo",
               icon: "shippingbox.fill",    iconColor: Color(hex: "#FF6B35"),
               description: "Pacote Telefone + Internet + TV",
-              categoryName: "Moradia",   subcategoryName: nil),
+              categorySystemKey: "housing",   subcategorySystemKey: nil),
         .init(id: "escola",     name: "Escola",
               icon: "book.fill",           iconColor: Color(hex: "#34C759"),
               description: "Mensalidade escolar",
-              categoryName: "Educação",  subcategoryName: "Escola"),
+              categorySystemKey: "education",  subcategorySystemKey: "education.school"),
         .init(id: "saude",      name: "Plano de Saúde",
               icon: "cross.fill",          iconColor: Color(hex: "#FF3B30"),
               description: "Mensalidade do plano de saúde",
-              categoryName: "Saúde",     subcategoryName: "Plano de Saúde"),
+              categorySystemKey: "health",     subcategorySystemKey: "health.insurance"),
     ]
-
+    
     /// Expenses pre-selected based on family structure
     static func defaults(adults: Int, children: Int) -> Set<String> {
         var ids: Set<String> = ["agua", "luz", "internet", "telefone"]
@@ -75,6 +75,7 @@ extension FixedExpenseItem {
 
 struct BudgetGoalItem: Identifiable {
     let id: String
+    let categorySystemKey: String?
     let categoryName: String
     let icon: String
     let color: Color
@@ -88,15 +89,15 @@ struct BudgetGoalItem: Identifiable {
         let ch = Double(min(children, 4))
 
         // Raw allocations — will be normalized
-        let raw: [(id: String, name: String, pct: Double, emoji: String, icon: String, hex: String)] = [
-            ("moradia",      "Moradia",      adults >= 2 ? 0.28 : 0.33, "🏠", "house.fill",              "#5E5CE6"),
-            ("supermercado", "Supermercado", 0.12 + 0.018 * ch,         "🛒", "cart.fill",               "#FF9500"),
-            ("restaurantes", "Restaurantes", 0.06 + 0.007 * ch,         "🍽", "fork.knife",              "#FF6B35"),
-            ("transporte",   "Transporte",   max(0.07, 0.10 - 0.01 * ch), "🚗", "car.fill",             "#636366"),
-            ("saude",        "Saúde",        0.07 + 0.012 * ch,         "❤️", "heart.fill",              "#FF3B30"),
-            ("educacao",     "Educação",     0.03 + 0.09 * ch,          "📚", "book.fill",               "#34C759"),
-            ("lazer",        "Lazer",        max(0.05, 0.12 - 0.025 * ch), "🎮", "gamecontroller.fill",  "#BF5AF2"),
-            ("poupanca",     "Poupança",     0.12,                       "💰", "banknote.fill",           "#32ADE6"),
+        let raw: [(id: String, systemKey: String?, name: String, pct: Double, emoji: String, icon: String, hex: String)] = [
+            ("moradia",      "housing",      "Moradia",      adults >= 2 ? 0.28 : 0.33, "🏠", "house.fill",              "#5E5CE6"),
+            ("supermercado", "groceries",    "Supermercado", 0.12 + 0.018 * ch,         "🛒", "cart.fill",               "#FF9500"),
+            ("restaurantes", "restaurants",  "Restaurantes", 0.06 + 0.007 * ch,         "🍽", "fork.knife",              "#FF6B35"),
+            ("transporte",   "transport",    "Transporte",   max(0.07, 0.10 - 0.01 * ch), "🚗", "car.fill",             "#636366"),
+            ("saude",        "health",       "Saúde",        0.07 + 0.012 * ch,         "❤️", "heart.fill",              "#FF3B30"),
+            ("educacao",     "education",    "Educação",     0.03 + 0.09 * ch,          "📚", "book.fill",               "#34C759"),
+            ("lazer",        "leisure",      "Lazer",        max(0.05, 0.12 - 0.025 * ch), "🎮", "gamecontroller.fill",  "#BF5AF2"),
+            ("poupanca",     nil,            "Poupança",     0.12,                       "💰", "banknote.fill",           "#32ADE6"),
         ]
 
         let total = raw.reduce(0.0) { $0 + $1.pct }
@@ -105,6 +106,7 @@ struct BudgetGoalItem: Identifiable {
             let normalized = item.pct / total
             return BudgetGoalItem(
                 id:           item.id,
+                categorySystemKey: item.systemKey,
                 categoryName: item.name,
                 icon:         item.icon,
                 color:        Color(hex: item.hex),
@@ -116,7 +118,7 @@ struct BudgetGoalItem: Identifiable {
         }
     }
 
-    /// Localized display name (PT categoryName stays stable for SwiftData linking)
+    /// Localized display name
     var displayName: String { t("ob.goal.\(id)") }
 }
 
@@ -286,6 +288,9 @@ struct OnboardingView: View {
         storedAdults = adultsCount
         storedChildren = childrenCount
 
+        let family = Family(name: storedName)
+        modelContext.insert(family)
+
         // 3. Create default checking account
         let checking = Account(
             name: t("ob.step5.checkingName"),
@@ -294,6 +299,7 @@ struct OnboardingView: View {
             color: "#5E5CE6",
             isDefault: true
         )
+        checking.family = family
         modelContext.insert(checking)
 
         // 4. Create credit card if selected
@@ -308,26 +314,23 @@ struct OnboardingView: View {
                 ccBillingStartDay: startDay,
                 ccBillingEndDay: closingDay
             )
+            cc.family = family
             modelContext.insert(cc)
         }
 
         // 5. Fetch categories for lookup
         let allCategories = (try? modelContext.fetch(FetchDescriptor<Category>())) ?? []
 
-        func findCategory(name: String, parentName: String?) -> Category? {
-            if let parentName {
-                return allCategories.first { $0.name == name && $0.parent?.name == parentName }
-            }
-            return allCategories.first { $0.name == name && $0.parent == nil }
+        func findCategory(systemKey: String?) -> Category? {
+            guard let systemKey else { return nil }
+            return allCategories.first { $0.systemKey == systemKey }
         }
 
         // 6. Create recurring transactions for selected fixed expenses
         for itemId in selectedExpenses {
             guard let item = FixedExpenseItem.all.first(where: { $0.id == itemId }) else { continue }
-            let category    = findCategory(name: item.categoryName, parentName: nil)
-            let subcategory = item.subcategoryName.flatMap {
-                findCategory(name: $0, parentName: item.categoryName)
-            }
+            let category    = findCategory(systemKey: item.categorySystemKey)
+            let subcategory = findCategory(systemKey: item.subcategorySystemKey)
             let base = Transaction(
                 type: .expense, amount: 0,
                 date: firstDayOfCurrentMonth(),
@@ -336,6 +339,7 @@ struct OnboardingView: View {
                 isPaid: false
             )
             base.account     = checking
+            base.family      = family
             base.category    = category
             base.subcategory = subcategory
             modelContext.insert(base)
@@ -344,14 +348,15 @@ struct OnboardingView: View {
 
         // 7. Create spending goals from the approved budget plan
         for goalItem in budgetGoals where goalItem.isEnabled && goalItem.id != "poupanca" {
-            let category = findCategory(name: goalItem.categoryName, parentName: nil)
+            let category = findCategory(systemKey: goalItem.categorySystemKey)
             guard category != nil else { continue }   // skip if category not seeded yet
             let goal = Goal(
-                title: goalItem.categoryName,
+                title: goalItem.displayName,
                 targetAmount: goalItem.amount.rounded(),
                 emoji: goalItem.icon,
                 category: category
             )
+            goal.family = family
             modelContext.insert(goal)
         }
 
@@ -368,7 +373,7 @@ struct OnboardingView: View {
 
 // MARK: - Shared: Progress Bar + Hero Shell
 
-private struct OnboardingHero: View {
+struct OnboardingHero: View {
     let title: String
     let subtitle: String
     let progress: Double
@@ -521,7 +526,8 @@ private struct OnboardingNameStep: View {
     let progress: Double
     let onNext: () -> Void
     @State private var lm = LanguageManager.shared
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @State private var entitlements = EntitlementManager.shared
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
 
     private var canAdvance: Bool {
         !userName.trimmingCharacters(in: .whitespaces).isEmpty
@@ -631,6 +637,72 @@ private struct OnboardingNameStep: View {
                         .submitLabel(.next)
                         .onSubmit { if canAdvance { onNext() } }
 
+                    VStack(alignment: .leading, spacing: 10) {
+                        Divider()
+
+                        if entitlements.purchaseState == .purchasedPendingRestart {
+                            Label("Compra restaurada. Feche e abra o app para ativar o Cloud.", systemImage: "checkmark.icloud.fill")
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(Color.accentColor)
+                        } else if entitlements.purchaseState == .active {
+                            Label("FinAInce Cloud já está ativo neste dispositivo.", systemImage: "icloud.fill")
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Ja comprou o FinAInce Cloud?")
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(.secondary)
+
+                            VStack(spacing: 10) {
+                                Button {
+                                    Task { await entitlements.restorePurchases() }
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        if entitlements.isRestoring {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                        } else {
+                                            Image(systemName: "arrow.clockwise.icloud")
+                                        }
+                                        Text(t("cloud.restorePurchase"))
+                                            .font(.subheadline.weight(.semibold))
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                                    .background(Color(.tertiarySystemBackground))
+                                    .foregroundStyle(.primary)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(entitlements.isRestoring || entitlements.isPurchasing)
+
+                                #if DEBUG
+                                Button {
+                                    Task { await entitlements.purchase() }
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        if entitlements.isPurchasing {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                        } else {
+                                            Image(systemName: "icloud.badge.plus")
+                                        }
+                                        Text("Comprar novamente (DEBUG)")
+                                            .font(.subheadline.weight(.semibold))
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                                    .background(Color.accentColor.opacity(0.12))
+                                    .foregroundStyle(Color.accentColor)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(entitlements.isRestoring || entitlements.isPurchasing || entitlements.product == nil)
+                                #endif
+                            }
+                        }
+                    }
+
                     Spacer(minLength: 8)
                 }
                 .padding(24)
@@ -641,14 +713,47 @@ private struct OnboardingNameStep: View {
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
-                    .background(canAdvance ? Color.accentColor : Color(.systemGray4))
+                    .background(canAdvance && entitlements.purchaseState != .purchasedPendingRestart ? Color.accentColor : Color(.systemGray4))
                     .foregroundStyle(.white)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
             }
             .buttonStyle(.plain)
-            .disabled(!canAdvance)
+            .disabled(!canAdvance || entitlements.purchaseState == .purchasedPendingRestart)
             .padding(.horizontal, 20)
             .padding(.bottom, 20)
+        }
+        .overlay {
+            if entitlements.purchaseState == .purchasedPendingRestart {
+                ZStack {
+                    Color(.systemBackground)
+                        .opacity(0.98)
+                        .ignoresSafeArea()
+
+                    VStack(spacing: 24) {
+                        FinAInceCloudRestartPrompt(
+                            cloudColors: [
+                                Color(red: 0.20, green: 0.45, blue: 0.90),
+                                Color(red: 0.42, green: 0.25, blue: 0.85)
+                            ],
+                            allowsDismissLater: false
+                        ) { }
+                    }
+                    .padding(24)
+                }
+                .transition(.opacity)
+            }
+        }
+        .alert(t("common.error"), isPresented: Binding(
+            get: { entitlements.purchaseError != nil },
+            set: { if !$0 { entitlements.clearError() } }
+        )) {
+            Button(t("common.ok"), role: .cancel) {
+                entitlements.clearError()
+            }
+        } message: {
+            if let message = entitlements.purchaseError {
+                Text(message)
+            }
         }
     }
 
@@ -713,118 +818,16 @@ private struct OnboardingFamilyStep: View {
 
             ScrollView {
                 VStack(spacing: 20) {
-                    familyCard
-
-                    // Summary chip
-                    HStack(spacing: 6) {
-                        Image(systemName: "info.circle")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(familySummary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 4)
+                    HouseholdCompositionEditor(
+                        adults: $adults,
+                        children: $children
+                    )
                 }
                 .padding(20)
             }
 
             OnboardingNavButtons(onBack: onBack, onNext: onNext)
         }
-    }
-
-    private var familyCard: some View {
-        VStack(spacing: 0) {
-            familyRow(
-                icon: "person.fill",
-                color: Color.accentColor,
-                title: t("ob.step1.adults"),
-                subtitle: t("ob.step1.adultsDesc"),
-                value: $adults,
-                range: 1...8
-            )
-            Divider().padding(.horizontal, 16)
-            familyRow(
-                icon: "figure.and.child.holdinghands",
-                color: Color(hex: "#34C759"),
-                title: t("ob.step1.children"),
-                subtitle: t("ob.step1.childrenDesc"),
-                value: $children,
-                range: 0...8
-            )
-        }
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-    }
-
-    private func familyRow(icon: String, color: Color, title: String,
-                           subtitle: String, value: Binding<Int>, range: ClosedRange<Int>) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 40, height: 40)
-                .background(color)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.subheadline.weight(.semibold))
-                Text(subtitle).font(.caption).foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            HStack(spacing: 0) {
-                Button {
-                    if value.wrappedValue > range.lowerBound {
-                        value.wrappedValue -= 1
-                    }
-                } label: {
-                    Image(systemName: "minus")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(value.wrappedValue > range.lowerBound ? Color.accentColor : Color(.systemGray4))
-                        .frame(width: 36, height: 36)
-                        .background(Color(.tertiarySystemBackground))
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-
-                Text("\(value.wrappedValue)")
-                    .font(.title3.bold().monospacedDigit())
-                    .frame(width: 44)
-                    .multilineTextAlignment(.center)
-
-                Button {
-                    if value.wrappedValue < range.upperBound {
-                        value.wrappedValue += 1
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(value.wrappedValue < range.upperBound ? Color.accentColor : Color(.systemGray4))
-                        .frame(width: 36, height: 36)
-                        .background(Color(.tertiarySystemBackground))
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(16)
-    }
-
-    private var familySummary: String {
-        let total = adults + children
-        let peopleWord  = total == 1 ? t("ob.step1.person")   : t("ob.step1.people")
-        let adultsWord  = adults == 1 ? t("ob.step1.adults")  : t("ob.step1.adults")
-        let childStr: String
-        if children == 0 {
-            childStr = t("ob.step1.noChildren")
-        } else {
-            let word = children == 1 ? t("ob.step1.children") : t("ob.step1.children")
-            childStr = "\(children) \(word.lowercased())"
-        }
-        return "\(total) \(peopleWord.lowercased()) · \(adults) \(adultsWord.lowercased()) · \(childStr)"
     }
 }
 
@@ -917,7 +920,7 @@ private struct OnboardingBudgetStep: View {
     let progress: Double
     let onBack: () -> Void
     let onNext: () -> Void
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1008,7 +1011,7 @@ private struct OnboardingGoalsStep: View {
     let progress: Double
     let onBack: () -> Void
     let onNext: () -> Void
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
 
     var body: some View {
         VStack(spacing: 0) {

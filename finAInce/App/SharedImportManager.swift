@@ -16,16 +16,18 @@ struct SharedImportFile: Identifiable {
     /// Image shared from another app via the Share Extension.
     /// `ChatView` reads this on appear and pre-populates `attachedImage`.
     var pendingSharedImage: UIImage? = nil
+    var pendingSharedChatFile: SharedImportFile?
 
     private let appGroupID    = "group.Moura.finaince"
     private let imageFileName = "shared_image.jpg"
-    private let supportedExtensions = ["csv", "tsv", "txt", "xlsx", "xls"]
+    private let sharedAttachmentFileNameKey = "shared_attachment_file_name"
+    private let supportedExtensions = ["csv", "tsv", "txt", "xlsx", "xls", "ofx"]
 
     private init() {}
 
     func handleSharedFile(_ url: URL) {
         guard isSupportedFile(url) else {
-            errorMessage = "Formato não suportado. Escolha um arquivo CSV, TXT ou Excel."
+            errorMessage = t("import.unsupportedFile")
             return
         }
 
@@ -41,6 +43,8 @@ struct SharedImportFile: Identifiable {
     /// Reads the image saved by the Share Extension from the App Group container.
     /// Stores it in `pendingSharedImage` and deletes the file (one-shot delivery).
     func handleSharedImage() {
+        handleSharedChatAttachment()
+
         guard
             let containerURL = FileManager.default.containerURL(
                 forSecurityApplicationGroupIdentifier: appGroupID
@@ -64,6 +68,39 @@ struct SharedImportFile: Identifiable {
         pendingSharedImage = nil
     }
 
+    func clearPendingSharedChatFile() {
+        if let url = pendingSharedChatFile?.url {
+            try? FileManager.default.removeItem(at: url)
+        }
+        pendingSharedChatFile = nil
+    }
+
+    private func handleSharedChatAttachment() {
+        guard
+            let defaults = UserDefaults(suiteName: appGroupID),
+            let fileName = defaults.string(forKey: sharedAttachmentFileNameKey),
+            let containerURL = FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: appGroupID
+            )
+        else { return }
+
+        let fileURL = containerURL.appendingPathComponent(fileName)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            defaults.removeObject(forKey: sharedAttachmentFileNameKey)
+            return
+        }
+
+        guard isSupportedFile(fileURL) else {
+            try? FileManager.default.removeItem(at: fileURL)
+            defaults.removeObject(forKey: sharedAttachmentFileNameKey)
+            errorMessage = t("import.unsupportedFile")
+            return
+        }
+
+        defaults.removeObject(forKey: sharedAttachmentFileNameKey)
+        pendingSharedChatFile = SharedImportFile(url: fileURL)
+    }
+
     private func isSupportedFile(_ url: URL) -> Bool {
         let fileExtension = url.pathExtension.lowercased()
         if supportedExtensions.contains(fileExtension) { return true }
@@ -78,6 +115,8 @@ struct SharedImportFile: Identifiable {
             type.conforms(to: .text) ||
             type.identifier == "org.openxmlformats.spreadsheetml.sheet" ||
             type.identifier == "com.microsoft.excel.xls" ||
-            type.identifier == "com.microsoft.excel.xlsx"
+            type.identifier == "com.microsoft.excel.xlsx" ||
+            type.identifier == "com.intuit.ofx" ||
+            type.preferredFilenameExtension == "ofx"
     }
 }

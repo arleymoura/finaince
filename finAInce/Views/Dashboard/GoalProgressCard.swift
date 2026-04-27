@@ -5,7 +5,7 @@ struct GoalProgressCard: View {
     let spent: Double           // ja pago
     let forecast: Double        // pago + pendente
     var onTap: (() -> Void)? = nil
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
 
     private var progress: Double {
         goal.targetAmount > 0 ? min(forecast / goal.targetAmount, 1.5) : 0
@@ -51,7 +51,7 @@ struct GoalProgressCard: View {
                         .font(.subheadline.weight(.semibold))
                     if let cat = goal.category {
                         HStack(spacing: 3) {
-                            Text(cat.name)
+                            Text(cat.displayName)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                             if onTap != nil {
@@ -128,7 +128,7 @@ struct CompactGoalProgressCard: View {
     let spent: Double
     let forecast: Double
     var onTap: (() -> Void)? = nil
-    @AppStorage("app.currencyCode") private var currencyCode = "BRL"
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
 
     private var percentage: Int {
         guard goal.targetAmount > 0 else { return 0 }

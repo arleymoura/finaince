@@ -36,10 +36,10 @@
          contextName = "ImportedTransactionRow.triggerAICategoryIfNeeded():CSVImportReviewView.swift">
          <PersistentStrings>
             <PersistentString
-               value = "ImportedTransaction">
+               value = "match">
             </PersistentString>
             <PersistentString
-               value = "match">
+               value = "currentNormalized">
             </PersistentString>
             <PersistentString
                value = "historical.placeName">
@@ -51,10 +51,21 @@
                value = "item.resolvedCategory ">
             </PersistentString>
             <PersistentString
-               value = "item.resolvedMerchantName">
+               value = "ImportedTransaction">
             </PersistentString>
             <PersistentString
-               value = "currentNormalized">
+               value = "item.resolvedMerchantName">
+            </PersistentString>
+         </PersistentStrings>
+      </ContextState>
+      <ContextState
+         contextName = "static AIService.suggestCategoryLocal(merchant:options:):AIService.swift">
+         <PersistentStrings>
+            <PersistentString
+               value = "step1">
+            </PersistentString>
+            <PersistentString
+               value = "normalizedMerchant">
             </PersistentString>
          </PersistentStrings>
       </ContextState>

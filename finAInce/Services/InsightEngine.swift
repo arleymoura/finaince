@@ -40,7 +40,8 @@ struct InsightEngine {
         candidates.appendIfPresent(spendingPaceInsight(context))
         candidates.appendIfPresent(subscriptionUnusedInsight(context))
         candidates.appendIfPresent(abnormalTransactionInsight(context))
-        candidates.appendIfPresent(cashFlowProjectionInsight(context))
+        // Disabled for now: cash-flow projection needs income vs expense modeling to avoid misleading balance insights.
+        // candidates.appendIfPresent(cashFlowProjectionInsight(context))
         candidates.appendIfPresent(categoryTrendUpInsight(context))
         candidates.appendIfPresent(categoryOverBaselineInsight(context))
         candidates.appendIfPresent(monthComparisonInsight(context))
@@ -136,7 +137,7 @@ struct InsightEngine {
             let percent = abs(delta / previous.amount) * 100
             guard percent >= 3 else { continue }
 
-            let name = tx.placeName ?? tx.category?.name ?? t("insight.fallback.recurringExpense")
+            let name = tx.placeName ?? tx.category?.displayName ?? t("insight.fallback.recurringExpense")
             let isIncrease = delta > 0
 
             return makeInsight(
@@ -151,7 +152,7 @@ struct InsightEngine {
                 topicKey: "price:\(merchantKey(tx))",
                 amount: abs(delta),
                 percentage: percent,
-                category: tx.category?.name,
+                category: tx.category?.displayName,
                 merchant: tx.placeName,
                 impactAmount: tx.amount,
                 deviationPercent: percent,
@@ -261,14 +262,14 @@ struct InsightEngine {
 
             let interactionSignals = values.reduce(0) { partialResult, tx in
                 let notesSignal = (tx.notes?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? 1 : 0
-                let receiptSignal = tx.receiptAttachments.isEmpty ? 0 : 1
+                let receiptSignal = (tx.receiptAttachments ?? []).isEmpty ? 0 : 1
                 let placeSignal = tx.placeGoogleId == nil ? 0 : 1
                 return partialResult + notesSignal + receiptSignal + placeSignal
             }
             guard interactionSignals <= values.count else { continue }
 
             let name = values.sorted { $0.date > $1.date }.first?.placeName
-                ?? values.first?.category?.name
+                ?? values.first?.category?.displayName
                 ?? key.capitalized
             flagged.append((name: name, amount: average))
         }
@@ -403,7 +404,7 @@ struct InsightEngine {
             topicKey: "abnormal:\(merchantKey(bestMatch.tx))",
             amount: bestMatch.amount,
             percentage: bestMatch.percent,
-            category: bestMatch.tx.category?.name,
+            category: bestMatch.tx.category?.displayName,
             merchant: bestMatch.tx.placeName,
             impactAmount: bestMatch.amount,
             deviationPercent: bestMatch.percent,
@@ -415,12 +416,12 @@ struct InsightEngine {
     }
 
     private static func categoryTrendUpInsight(_ context: InsightContext) -> Insight? {
-        var best: (category: String, amount: Double, growth: Double)?
+        var best: (categoryKey: String, categoryName: String, amount: Double, growth: Double)?
 
-        for category in context.distinctCategoryNames {
-            let current = categoryTotal(category, in: context.currentMonthPaidExpenses)
-            let previous = categoryTotal(category, in: context.monthExpenses(offset: -1).filter(\.isPaid))
-            let older = categoryTotal(category, in: context.monthExpenses(offset: -2).filter(\.isPaid))
+        for category in context.distinctCategories {
+            let current = categoryTotal(category.key, in: context.currentMonthPaidExpenses)
+            let previous = categoryTotal(category.key, in: context.monthExpenses(offset: -1).filter(\.isPaid))
+            let older = categoryTotal(category.key, in: context.monthExpenses(offset: -2).filter(\.isPaid))
 
             guard older > 0, previous > older, current > previous else { continue }
 
@@ -428,7 +429,7 @@ struct InsightEngine {
             guard growth >= 15 else { continue }
 
             if best == nil || growth > (best?.growth ?? 0) {
-                best = (category, current, growth)
+                best = (category.key, category.name, current, growth)
             }
         }
 
@@ -436,15 +437,15 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .categoryTrendUp,
-            title: t("insight.categoryTrendUp.title", best.category),
+            title: t("insight.categoryTrendUp.title", best.categoryName),
             body: t("insight.categoryTrendUp.body", Int(best.growth.rounded())),
             icon: "chart.line.uptrend.xyaxis.circle.fill",
             color: .orange,
             sentiment: .alert,
-            topicKey: "trend:\(best.category.lowercased())",
+            topicKey: "trend:\(best.categoryKey)",
             amount: best.amount,
             percentage: best.growth,
-            category: best.category,
+            category: best.categoryName,
             merchant: nil,
             impactAmount: best.amount,
             deviationPercent: best.growth,
@@ -453,7 +454,7 @@ struct InsightEngine {
             currencyCode: context.currencyCode,
             chatPrompt: t(
                 "insight.categoryTrendUp.prompt",
-                best.category,
+                best.categoryName,
                 Int(best.growth.rounded())
             )
         )
@@ -495,7 +496,7 @@ struct InsightEngine {
             topicKey: "goal:\(best.goal.id.uuidString)",
             amount: best.projected,
             percentage: best.percent,
-            category: best.goal.category?.name,
+            category: best.goal.category?.displayName,
             merchant: nil,
             impactAmount: max(0, best.projected - best.goal.targetAmount),
             deviationPercent: best.percent,
@@ -560,7 +561,7 @@ struct InsightEngine {
         guard !upcoming.isEmpty else { return nil }
 
         let total = upcoming.reduce(0) { $0 + $1.amount }
-        let names = upcoming.prefix(2).map { $0.placeName ?? $0.category?.name ?? t("insight.fallback.recurringBill") }
+        let names = upcoming.prefix(2).map { $0.placeName ?? $0.category?.displayName ?? t("insight.fallback.recurringBill") }
         let preview = names.joined(separator: ", ")
 
         return makeInsight(
@@ -743,12 +744,12 @@ struct InsightEngine {
     }
 
     private static func categoryOverBaselineInsight(_ context: InsightContext) -> Insight? {
-        var best: (category: String, current: Double, percent: Double)?
+        var best: (categoryKey: String, categoryName: String, current: Double, percent: Double)?
 
-        for category in context.distinctCategoryNames {
-            let current = categoryTotal(category, in: context.currentMonthPaidExpenses)
+        for category in context.distinctCategories {
+            let current = categoryTotal(category.key, in: context.currentMonthPaidExpenses)
             let baselineMonths = (-3 ... -1).map { offset in
-                categoryTotal(category, in: context.monthExpenses(offset: offset).filter(\.isPaid))
+                categoryTotal(category.key, in: context.monthExpenses(offset: offset).filter(\.isPaid))
             }.filter { $0 > 0 }
 
             guard !baselineMonths.isEmpty else { continue }
@@ -760,7 +761,7 @@ struct InsightEngine {
             guard percent >= 25 else { continue }
 
             if best == nil || percent > (best?.percent ?? 0) {
-                best = (category, current, percent)
+                best = (category.key, category.name, current, percent)
             }
         }
 
@@ -768,15 +769,15 @@ struct InsightEngine {
 
         return makeInsight(
             kind: .categoryOverBaseline,
-            title: t("insight.categoryOverBaseline.title", best.category),
+            title: t("insight.categoryOverBaseline.title", best.categoryName),
             body: t("insight.categoryOverBaseline.body", Int(best.percent.rounded())),
             icon: "chart.bar.xaxis",
             color: .orange,
             sentiment: .alert,
-            topicKey: "category-baseline:\(best.category.lowercased())",
+            topicKey: "category-baseline:\(best.categoryKey)",
             amount: best.current,
             percentage: best.percent,
-            category: best.category,
+            category: best.categoryName,
             merchant: nil,
             impactAmount: best.current,
             deviationPercent: best.percent,
@@ -785,7 +786,7 @@ struct InsightEngine {
             currencyCode: context.currencyCode,
             chatPrompt: t(
                 "insight.categoryOverBaseline.prompt",
-                best.category,
+                best.categoryName,
                 Int(best.percent.rounded())
             )
         )
@@ -793,29 +794,32 @@ struct InsightEngine {
 
     private static func topCategoryInsight(_ context: InsightContext) -> Insight? {
         var totals: [String: Double] = [:]
+        var labels: [String: String] = [:]
         var icons: [String: String] = [:]
 
         for tx in context.currentMonthPaidExpenses {
-            guard let name = tx.category?.name else { continue }
-            totals[name, default: 0] += tx.amount
-            icons[name] = tx.category?.icon ?? "tag.fill"
+            guard let category = categoryIdentity(for: tx) else { continue }
+            totals[category.key, default: 0] += tx.amount
+            labels[category.key] = category.name
+            icons[category.key] = tx.category?.rootCategory.icon ?? tx.category?.icon ?? "tag.fill"
         }
 
         guard let top = totals.max(by: { $0.value < $1.value }), top.value > 0 else { return nil }
+        let topName = labels[top.key] ?? t("insight.fallback.uncategorized")
 
         let percent = context.currentMonthPaid > 0 ? (top.value / context.currentMonthPaid) * 100 : 0
 
         return makeInsight(
             kind: .topCategory,
-            title: t("insight.topCategory.title", top.key),
+            title: t("insight.topCategory.title", topName),
             body: t("insight.topCategory.body", Int(percent.rounded())),
             icon: icons[top.key] ?? "tag.fill",
             color: .blue,
             sentiment: .neutral,
-            topicKey: "top-category:\(top.key.lowercased())",
+            topicKey: "top-category:\(top.key)",
             amount: top.value,
             percentage: percent,
-            category: top.key,
+            category: topName,
             merchant: nil,
             impactAmount: top.value,
             deviationPercent: percent,
@@ -824,7 +828,7 @@ struct InsightEngine {
             currencyCode: context.currencyCode,
             chatPrompt: t(
                 "insight.topCategory.prompt",
-                top.key,
+                topName,
                 top.value.asCurrency(context.currencyCode)
             )
         )
@@ -935,9 +939,9 @@ struct InsightEngine {
 
     // MARK: - Helpers
 
-    private static func categoryTotal(_ category: String, in transactions: [Transaction]) -> Double {
+    private static func categoryTotal(_ categoryKey: String, in transactions: [Transaction]) -> Double {
         transactions.reduce(0) { partialResult, tx in
-            partialResult + ((tx.category?.name == category) ? tx.amount : 0)
+            partialResult + ((categoryIdentity(for: tx)?.key == categoryKey) ? tx.amount : 0)
         }
     }
 
@@ -951,7 +955,17 @@ struct InsightEngine {
         if let merchant, !merchant.isEmpty {
             return merchant.lowercased()
         }
-        return (transaction.category?.name ?? t("insight.fallback.uncategorized")).lowercased()
+        return (transaction.category?.displayName ?? t("insight.fallback.uncategorized")).lowercased()
+    }
+
+    fileprivate static func categoryIdentity(for transaction: Transaction) -> (key: String, name: String)? {
+        if let root = transaction.category?.rootCategory {
+            return (root.systemKey ?? root.name, root.displayName)
+        }
+        if let category = transaction.category {
+            return (category.systemKey ?? category.name, category.displayName)
+        }
+        return nil
     }
 
     private static func spentAmount(for goal: Goal, in transactions: [Transaction]) -> Double {
@@ -1086,8 +1100,17 @@ private struct InsightContext {
         return accounts.reduce(0) { $0 + $1.balance }
     }
 
-    var distinctCategoryNames: [String] {
-        Array(Set(scopedTransactions.compactMap(\.category?.name))).sorted()
+    var distinctCategories: [(key: String, name: String)] {
+        var seen = Set<String>()
+        var categories: [(key: String, name: String)] = []
+
+        for transaction in scopedTransactions {
+            guard let identity = InsightEngine.categoryIdentity(for: transaction) else { continue }
+            guard seen.insert(identity.key).inserted else { continue }
+            categories.append(identity)
+        }
+
+        return categories.sorted { $0.name < $1.name }
     }
 
     func monthPaid(offset: Int) -> Double {
