@@ -1,0 +1,173 @@
+import SwiftUI
+
+struct HouseholdCompositionEditor: View {
+    @Binding var adults: Int
+    @Binding var children: Int
+
+    var body: some View {
+        VStack(spacing: 20) {
+            familyCard
+
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(householdSummary(adults: adults, children: children))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 4)
+        }
+    }
+
+    private var familyCard: some View {
+        VStack(spacing: 0) {
+            familyRow(
+                icon: "person.fill",
+                color: Color.accentColor,
+                title: t("ob.step1.adults"),
+                subtitle: t("ob.step1.adultsDesc"),
+                value: $adults,
+                range: 1...8
+            )
+            Divider().padding(.horizontal, 16)
+            familyRow(
+                icon: "figure.and.child.holdinghands",
+                color: Color(hex: "#34C759"),
+                title: t("ob.step1.children"),
+                subtitle: t("ob.step1.childrenDesc"),
+                value: $children,
+                range: 0...8
+            )
+        }
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func familyRow(
+        icon: String,
+        color: Color,
+        title: String,
+        subtitle: String,
+        value: Binding<Int>,
+        range: ClosedRange<Int>
+    ) -> some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 40, height: 40)
+                .background(color)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.semibold))
+                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            HStack(spacing: 0) {
+                Button {
+                    if value.wrappedValue > range.lowerBound {
+                        value.wrappedValue -= 1
+                    }
+                } label: {
+                    Image(systemName: "minus")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(value.wrappedValue > range.lowerBound ? Color.accentColor : Color(.systemGray4))
+                        .frame(width: 36, height: 36)
+                        .background(Color(.tertiarySystemBackground))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+
+                Text("\(value.wrappedValue)")
+                    .font(.title3.bold().monospacedDigit())
+                    .frame(width: 44)
+                    .multilineTextAlignment(.center)
+
+                Button {
+                    if value.wrappedValue < range.upperBound {
+                        value.wrappedValue += 1
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(value.wrappedValue < range.upperBound ? Color.accentColor : Color(.systemGray4))
+                        .frame(width: 36, height: 36)
+                        .background(Color(.tertiarySystemBackground))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(16)
+    }
+}
+
+func householdSummary(adults: Int, children: Int) -> String {
+    let total = adults + children
+    let peopleWord = total == 1 ? t("ob.step1.person") : t("ob.step1.people")
+    let adultsWord = t("ob.step1.adults")
+    let childStr: String
+
+    if children == 0 {
+        childStr = t("ob.step1.noChildren")
+    } else {
+        childStr = "\(children) \(t("ob.step1.children").lowercased())"
+    }
+
+    return "\(total) \(peopleWord.lowercased()) · \(adults) \(adultsWord.lowercased()) · \(childStr)"
+}
+
+struct FamilyMembersView: View {
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage("user.adultsCount") private var storedAdults = 1
+    @AppStorage("user.childrenCount") private var storedChildren = 0
+
+    @State private var adults = 1
+    @State private var children = 0
+    @State private var didLoadStoredValues = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            OnboardingHero(
+                title: t("ob.step1.heroTitle"),
+                subtitle: t("ob.step1.heroSubtitle"),
+                progress: 1,
+                icon: "person.3.fill"
+            )
+
+            ScrollView {
+                HouseholdCompositionEditor(adults: $adults, children: $children)
+                    .padding(20)
+            }
+
+            Button {
+                storedAdults = adults
+                storedChildren = children
+                dismiss()
+            } label: {
+                Text(t("common.save"))
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(Color.accentColor)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
+            .padding(20)
+        }
+        .navigationTitle(t("settings.familyMembers"))
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            guard !didLoadStoredValues else { return }
+            adults = max(storedAdults, 1)
+            children = max(storedChildren, 0)
+            didLoadStoredValues = true
+        }
+    }
+}
