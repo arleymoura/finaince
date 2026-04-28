@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import LocalAuthentication
 
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
@@ -10,7 +11,9 @@ struct SettingsView: View {
     @AppStorage("notif.goalAlert")      private var goalAlert   = false
     @AppStorage("app.currencyCode")     private var currencyCode = CurrencyOption.defaultCode
     @AppStorage("app.colorScheme")      private var colorScheme  = "light"
+    @AppStorage("app.lockEnabled")      private var lockEnabled  = false
     @State private var showSavedAlert = false
+    @State private var lockManager = AppLockManager.shared
     private var lm: LanguageManager { LanguageManager.shared }
     private var isRegularLayout: Bool { horizontalSizeClass == .regular }
     private let regularContentMaxWidth: CGFloat = 1100
@@ -39,6 +42,7 @@ struct SettingsView: View {
             familySection
             aiSection
             languageSection
+            privacySection
             notificationsSection
             preferencesSection
             aboutSection
@@ -170,6 +174,60 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+    }
+
+    // MARK: - Privacy Section
+
+    private var privacySection: some View {
+        Section {
+            Toggle(isOn: $lockEnabled) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.accentColor.opacity(0.12))
+                            .frame(width: 32, height: 32)
+                        Image(systemName: biometryIcon)
+                            .font(.subheadline)
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(t("settings.lock"))
+                            .font(.subheadline)
+                        Text(biometryDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .onChange(of: lockEnabled) { _, enabled in
+                lockManager.isEnabled = enabled
+                // If disabling, make sure app is unlocked
+                if !enabled {
+                    // nothing extra needed — next foreground won't call lockIfEnabled
+                }
+            }
+        } header: {
+            Text(t("settings.privacy"))
+        } footer: {
+            Text(t("settings.lockFooter"))
+        }
+    }
+
+    private var biometryIcon: String {
+        switch lockManager.biometryType {
+        case .faceID:   return "faceid"
+        case .touchID:  return "touchid"
+        default:        return "lock.fill"
+        }
+    }
+
+    private var biometryDescription: String {
+        switch lockManager.biometryType {
+        case .faceID:   return t("settings.lockDescFaceID")
+        case .touchID:  return t("settings.lockDescTouchID")
+        default:        return t("settings.lockDescPasscode")
+            
         }
     }
 

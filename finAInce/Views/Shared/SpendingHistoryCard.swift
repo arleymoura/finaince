@@ -76,8 +76,13 @@ struct SpendingHistoryCard: View {
             // ── Header ────────────────────────────────────────────────────
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(t("dashboard.spendingHistory"))
-                        .font(.headline)
+                    HStack(spacing: 8) {
+                        Image(systemName: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+                            .font(.subheadline)
+                            .foregroundStyle(.teal)
+                        Text(t("dashboard.spendingHistory"))
+                            .font(.headline)
+                    }
                     if let delta {
                         let sign: String = delta >= 0 ? "+" : ""
                         let color: Color = delta > 2 ? .red : delta < -2 ? .green : .secondary

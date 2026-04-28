@@ -210,7 +210,7 @@ struct DashboardView: View {
                                 heroHeader(topInset: proxy.safeAreaInsets.top)
                                     .ignoresSafeArea(edges: .top)
 
-                                VStack(spacing: 0) {
+                                VStack(spacing: 5) {
                                     accountFilterBar
                                         .background(dashboardWorkspaceBackground)
 
@@ -1370,8 +1370,8 @@ struct DashboardView: View {
             insightsSection
             aiSetupCard
             calendarSection
-            goalsSection
             monthEvolutionChartCard
+            goalsSection       
             chartSection
             projectsSection
         }
@@ -1421,8 +1421,14 @@ struct DashboardView: View {
                 Image(systemName: "chart.bar.fill")
                     .font(.subheadline)
                     .foregroundStyle(Color.accentColor)
-                Text(t("dashboard.goals"))
-                    .font(.headline)
+                NavigationLink {
+                    GoalsListView()
+                } label: {
+                    Text(t("dashboard.goals"))
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
                 Spacer()
                 Button { showGoalForm = true } label: {
                     Image(systemName: "plus.circle.fill")
@@ -1547,8 +1553,14 @@ struct DashboardView: View {
                         Image(systemName: "folder.fill")
                             .font(.subheadline)
                             .foregroundStyle(.orange)
-                        Text(t("dashboard.projects"))
-                            .font(.headline)
+                        NavigationLink {
+                            ProjectsListView()
+                        } label: {
+                            Text(t("dashboard.projects"))
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                        }
+                        .buttonStyle(.plain)
                         Spacer()
                         Button { showNewProjectForm = true } label: {
                             Image(systemName: "plus.circle.fill")
@@ -1694,8 +1706,13 @@ struct DashboardView: View {
         return VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(t("transaction.monthEvolution"))
-                        .font(.headline)
+                    HStack(spacing: 8) {
+                        Image(systemName: "chart.xyaxis.line")
+                            .font(.subheadline)
+                            .foregroundStyle(.purple)
+                        Text(t("transaction.monthEvolution"))
+                            .font(.headline)
+                    }
 
                     if hasPrevious {
                         HStack(spacing: 4) {
@@ -1884,7 +1901,10 @@ struct DashboardView: View {
     private var chartCard: some View {
         VStack(alignment: .leading, spacing: 0) {
             // ── Card header ──────────────────────────────────────────────
-            HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "chart.pie.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.pink)
                 Text(t("dashboard.byCategory"))
                     .font(.headline)
                 Spacer()

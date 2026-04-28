@@ -13,6 +13,7 @@ struct ProfileView: View {
     @Query private var families: [Family]
     @Query private var conversations: [ChatConversation]
     @Query private var analyses: [AIAnalysis]
+    @Query private var costCenters: [CostCenter]
 
     @AppStorage("user.name")  private var userName  = "Meu Perfil"
     @AppStorage("user.photo") private var photoData: Data = Data()
@@ -26,6 +27,9 @@ struct ProfileView: View {
     @State private var selectedAccount: Account?
     @State private var showCreateAccount = false
     @State private var showCloudPaywall = false
+    #if DEBUG
+    @State private var showDebugPaywall = false
+    #endif
     @State private var entitlements = EntitlementManager.shared
     @State private var profileCloudSync = ProfileCloudSyncStore.shared
     private let regularContentMaxWidth: CGFloat = 1100
@@ -44,46 +48,51 @@ struct ProfileView: View {
                     profileHeaderCard
                 }
                 .toolbar(.hidden, for: .navigationBar)
-                .onChange(of: photoPicker) { _, item in
-                    Task {
-                        if let data = try? await item?.loadTransferable(type: Data.self) {
-                            photoData = data
-                            if let ui = UIImage(data: data) {
-                                profileImage = Image(uiImage: ui)
-                            }
-                            publishProfileIfNeeded()
+            .onChange(of: photoPicker) { _, item in
+                Task {
+                    if let data = try? await item?.loadTransferable(type: Data.self) {
+                        photoData = data
+                        if let ui = UIImage(data: data) {
+                            profileImage = Image(uiImage: ui)
                         }
+                        publishProfileIfNeeded()
                     }
                 }
-                .onAppear {
-                    syncProfileFromCloudIfNeeded()
-                    loadPhoto()
-                    handleDeepLink(deepLinkManager.pendingDeepLink)
-                }
-                .onChange(of: userName) { _, _ in
-                    publishProfileIfNeeded()
-                }
-                .onChange(of: photoData) { _, _ in
-                    loadPhoto()
-                    publishProfileIfNeeded()
-                }
-                .onChange(of: deepLinkManager.pendingDeepLink) { _, deepLink in
-                    handleDeepLink(deepLink)
-                }
-                .sheet(item: $deepLinkedGoal) { goal in
-                    GoalFormView(goal: goal)
-                }
-                .sheet(item: $selectedAccount) { account in
-                    AccountFormView(account: account)
-                        .presentationDetents([.medium, .large])
-                }
-                .sheet(isPresented: $showCreateAccount) {
-                    AccountFormView()
-                        .presentationDetents([.medium, .large])
-                }
-                .sheet(isPresented: $showCloudPaywall) {
-                    FinAInceCloudView()
-                }
+            }
+            .onAppear {
+                syncProfileFromCloudIfNeeded()
+                loadPhoto()
+                handleDeepLink(deepLinkManager.pendingDeepLink)
+            }
+            .onChange(of: userName) { _, _ in
+                publishProfileIfNeeded()
+            }
+            .onChange(of: photoData) { _, _ in
+                loadPhoto()
+                publishProfileIfNeeded()
+            }
+            .onChange(of: deepLinkManager.pendingDeepLink) { _, deepLink in
+                handleDeepLink(deepLink)
+            }
+            .sheet(item: $deepLinkedGoal) { goal in
+                GoalFormView(goal: goal)
+            }
+            .sheet(item: $selectedAccount) { account in
+                AccountFormView(account: account)
+                    .presentationDetents([.medium, .large])
+            }
+            .sheet(isPresented: $showCreateAccount) {
+                AccountFormView()
+                    .presentationDetents([.medium, .large])
+            }
+            .sheet(isPresented: $showCloudPaywall) {
+                FinAInceCloudView()
+            }
+            #if DEBUG
+            .sheet(isPresented: $showDebugPaywall) {
+                FinAInceCloudView(debugForceShowPaywall: true)
+            }
+            #endif
         }
     }
 
@@ -147,12 +156,7 @@ struct ProfileView: View {
             } header: {
                 Text(t("profile.goals"))
             }
-
-            AccountsProfileSection(
-                selectedAccount: $selectedAccount,
-                showCreateAccount: $showCreateAccount
-            )
-
+            
             Section {
                 NavigationLink {
                     ProjectsListView()
@@ -170,11 +174,25 @@ struct ProfileView: View {
                             .foregroundStyle(.primary)
 
                         Spacer()
+
+                        let activeCount = costCenters.filter(\.isActive).count
+                        if activeCount > 0 {
+                            Text(t("profile.projectsActive", activeCount))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             } header: {
                 Text(t("profile.projects"))
             }
+
+            AccountsProfileSection(
+                selectedAccount: $selectedAccount,
+                showCreateAccount: $showCreateAccount
+            )
+
+
             
             Section {
                 NavigationLink(destination: AIProviderSettingsView()) {
@@ -243,6 +261,13 @@ struct ProfileView: View {
                 Divider()
 
                 Button {
+                    showDebugPaywall = true
+                } label: {
+                    Label("Ver tela de compra (Paywall)", systemImage: "creditcard.fill")
+                        .foregroundStyle(.purple)
+                }
+
+                Button {
                     SampleData.seed(in: modelContext)
                 } label: {
                     Label(t("profile.seedData"), systemImage: "wand.and.stars")
@@ -269,7 +294,7 @@ struct ProfileView: View {
             #endif
         }
         .listStyle(.insetGrouped)
-        .contentMargins(.top, 12, for: .scrollContent)
+        .contentMargins(.top, 16, for: .scrollContent)
         .environment(\.defaultMinListHeaderHeight, 0)
         .listSectionSpacing(12)
     }
@@ -277,11 +302,13 @@ struct ProfileView: View {
     // MARK: - Profile Header
 
     private var profileHeaderCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 20) {
+            // ── Title ────────────────────────────────────────────────────
             Text(t("profile.title"))
-                .font(.largeTitle.weight(.bold))
+                .font(.system(size: 30, weight: .bold, design: .rounded))
                 .foregroundStyle(.primary)
 
+            // ── Avatar + Name ─────────────────────────────────────────────
             HStack(spacing: 16) {
                 PhotosPicker(selection: $photoPicker, matching: .images) {
                     ZStack(alignment: .bottomTrailing) {
@@ -293,7 +320,7 @@ struct ProfileView: View {
                             } else {
                                 Circle()
                                     .fill(LinearGradient(
-                                        colors: [.accentColor.opacity(0.8), .accentColor],
+                                        colors: [.accentColor.opacity(0.75), .accentColor],
                                         startPoint: .topLeading, endPoint: .bottomTrailing
                                     ))
                                     .overlay(
@@ -305,6 +332,7 @@ struct ProfileView: View {
                         }
                         .frame(width: 74, height: 74)
                         .clipShape(Circle())
+                        .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 3)
 
                         Circle()
                             .fill(Color(.systemBackground))
@@ -314,7 +342,7 @@ struct ProfileView: View {
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             )
-                            .shadow(radius: 2)
+                            .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
                     }
                 }
                 .buttonStyle(.plain)
@@ -340,24 +368,39 @@ struct ProfileView: View {
                 Spacer()
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 20)
+        .frame(maxWidth: isRegularLayout ? regularContentMaxWidth : .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, isRegularLayout ? 24 : 20)
         .padding(.top, 16)
-        .padding(.bottom, 20)
+        .padding(.bottom, 24)
         .background {
-            Group {
-                if isRegularLayout {
-                    WorkspaceBackground(isRegularLayout: true)
-                } else {
-                    UnevenRoundedRectangle(
-                        cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24)
+            // As shapes com ignoresSafeArea(edges: .top) cobrem a status bar.
+            // O clipShape NÃO é usado no view externo — as bordas arredondadas
+            // são definidas pelas próprias shapes aqui dentro, que se estendem
+            // para cima sem serem cortadas.
+            ZStack {
+                UnevenRoundedRectangle(cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24))
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(.systemGray6), Color(.systemBackground)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
                     )
-                    .fill(Color(.systemBackground))
                     .ignoresSafeArea(edges: .top)
-                }
+
+                UnevenRoundedRectangle(cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24))
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.accentColor.opacity(0.06), .clear],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .ignoresSafeArea(edges: .top)
             }
         }
-        .shadow(color: isRegularLayout ? .clear : Color.black.opacity(0.06), radius: 10, x: 0, y: 4)
+        .shadow(color: Color.black.opacity(0.10), radius: 14, x: 0, y: 8)
     }
 
     private var emptyGoals: some View {

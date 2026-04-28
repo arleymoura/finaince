@@ -206,7 +206,7 @@ struct TransactionListView: View {
                         VStack(spacing: 0) {
                             contentArea(for: proxy.size.height)
                         }
-                        .padding(.top, isRegularLayout ? 0 : -44)
+                        .padding(.top, isRegularLayout ? -30 : -44)
                     }
                 }
                 // FTU overlay — drawn on top of everything inside the GeometryReader
@@ -336,26 +336,34 @@ struct TransactionListView: View {
     @ViewBuilder
     private func contentArea(for availableHeight: CGFloat) -> some View {
         if isRegularLayout {
+            // Filter bar: full-screen-width background, content pinned to column width
             VStack(spacing: 0) {
                 inlineFilterBar
-                    .background(WorkspaceBackground(isRegularLayout: isRegularLayout))
+                    .frame(maxWidth: regularContentMaxWidth)
+                    .frame(maxWidth: .infinity)
 
                 Divider()
-
-                if filteredTransactions.isEmpty {
-                    ScrollView {
-                        emptyState
-                            .frame(maxWidth: .infinity, minHeight: availableHeight * 0.55)
-                    }
-                    .refreshable {
-                        refreshListCache()
-                    }
+            }
+            .background {
+                if isRegularLayout {
+                    Color.clear
                 } else {
-                    transactionsWorkspaceView
+                    WorkspaceBackground(isRegularLayout: isRegularLayout)
                 }
             }
-            .frame(maxWidth: regularContentMaxWidth)
-            .frame(maxWidth: .infinity)
+
+            if filteredTransactions.isEmpty {
+                ScrollView {
+                    emptyState
+                        .frame(maxWidth: regularContentMaxWidth)
+                        .frame(maxWidth: .infinity, minHeight: availableHeight * 0.55)
+                }
+                .refreshable {
+                    refreshListCache()
+                }
+            } else {
+                transactionsWorkspaceView
+            }
         } else {
             inlineFilterBar
                 .background(WorkspaceBackground(isRegularLayout: isRegularLayout))
@@ -610,9 +618,9 @@ struct TransactionListView: View {
             )
         )
         .clipShape(
-            UnevenRoundedRectangle(cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24))
+            UnevenRoundedRectangle(cornerRadii: .init(bottomLeading: 28, bottomTrailing: 28))
         )
-        .shadow(color: Color.accentColor.opacity(0.24), radius: 12, x: 0, y: 6)
+        .shadow(color: Color.accentColor.opacity(0.20), radius: 14, x: 0, y: 8)
     }
 
     private func monthNavigationButton(systemName: String, action: @escaping () -> Void) -> some View {
@@ -815,19 +823,19 @@ struct TransactionListView: View {
     private var inlineFilterBar: some View {
         VStack(spacing: 0) {
             if isRegularLayout {
-                HStack(spacing: 10) {
+                HStack(alignment: .center, spacing: 10) {
                     accountDropdown
                         .frame(maxWidth: .infinity)
-
+                    
                     categoryDropdown
                         .frame(maxWidth: .infinity)
-
+                    
                     statusDropdown
                         .frame(maxWidth: .infinity)
-
+                    
                     searchField
                         .frame(maxWidth: .infinity)
-
+                    
                     if hasActiveFilters {
                         Button {
                             withAnimation(.spring(duration: 0.25)) { clearFilters() }
@@ -841,18 +849,19 @@ struct TransactionListView: View {
                     }
                 }
                 .padding(.horizontal, 20)
-                .padding(.vertical, 10)
+                .padding(.vertical, 15)
+                .padding(.top, isRegularLayout ? 0 : 10)
             } else {
-                HStack(spacing: 8) {
+                HStack(alignment: .center,spacing: 8) {
                     accountDropdown
                         .frame(maxWidth: .infinity)
-
+                    
                     categoryDropdown
                         .frame(maxWidth: .infinity)
-
+                    
                     statusDropdown
                         .frame(maxWidth: .infinity)
-
+                    
                     Button {
                         withAnimation(.spring(duration: 0.25)) {
                             isSearchVisible.toggle()
@@ -865,19 +874,19 @@ struct TransactionListView: View {
                         Image(systemName: isSearchVisible || !searchText.isEmpty
                               ? "magnifyingglass.circle.fill"
                               : "magnifyingglass")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(isSearchVisible || !searchText.isEmpty
-                                             ? Color.accentColor : Color(.tertiaryLabel))
-                            .frame(width: 36, height: 36)
-                            .background(Color(.secondarySystemBackground))
-                            .clipShape(Circle())
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(isSearchVisible || !searchText.isEmpty
+                                         ? Color.accentColor : Color(.tertiaryLabel))
+                        .frame(width: 36, height: 36)
+                        .background(Color(.secondarySystemBackground))
+                        .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 10)
                 .padding(.bottom, hasActiveFilters || isSearchVisible ? 6 : 10)
-
+                
                 if hasActiveFilters {
                     HStack(spacing: 6) {
                         Circle()
@@ -902,7 +911,7 @@ struct TransactionListView: View {
                     .padding(.bottom, isSearchVisible ? 4 : 8)
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
-
+                
                 if isSearchVisible {
                     searchField
                         .padding(.horizontal, 16)
@@ -1068,7 +1077,7 @@ struct TransactionListView: View {
     private var cumulativeChartCard: some View {
         let data = cumulativeChartData
         let currentPoints = data.filter { $0.series == "Este mês" }
-        let prevPoints    = data.filter { $0.series == "Mês anterior" }
+        let prevPoints    = data.filter { $0.series == "Mês anterior" } //todo:localaizar
         let currentTotal  = currentPoints.last?.amount ?? 0
         let prevTotal     = prevPoints.last?.amount ?? 0
         let hasPrev       = prevTotal.isFinite && prevTotal > 0 && currentTotal.isFinite
@@ -1080,8 +1089,16 @@ struct TransactionListView: View {
             // Header
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(t("transaction.monthEvolution"))
-                        .font(.headline)
+                    HStack(spacing: 8) {
+                        
+                        Image(systemName: "chart.xyaxis.line")
+                            .font(.subheadline)
+                            .foregroundStyle(.pink)
+                        
+                        Text(t("transaction.monthEvolution"))
+                            .font(.headline)
+                    }
+                    
                     if hasPrev {
                         HStack(spacing: 4) {
                             Image(systemName: pct >= 0 ? "arrow.up.right" : "arrow.down.right")
@@ -1094,7 +1111,6 @@ struct TransactionListView: View {
                 }
                 Spacer()
                 Text(currentTotal.asCurrency(currencyCode))
-                    .font(.title3.weight(.bold))
                     .foregroundStyle(.primary)
                     .contentTransition(.numericText())
             }
@@ -1102,7 +1118,7 @@ struct TransactionListView: View {
             // Chart
             Chart(data) { point in
                 AreaMark(
-                    x: .value("Dia", point.day),
+                    x: .value("Dia", point.day), //todo:localizar
                     y: .value("Total", point.amount)
                 )
                 .foregroundStyle(by: .value("Série", point.series))
@@ -1149,7 +1165,7 @@ struct TransactionListView: View {
             }
         }
         .padding(16)
-        .background(Color(.systemBackground))
+       // .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
         .task(id: insightKey) {
@@ -1205,7 +1221,7 @@ struct TransactionListView: View {
                                         year: selectedYear, month: selectedMonth))
                                     ?? today)?.count ?? 30
 
-        let currentTotal = cumulativeChartData.filter { $0.series == "Este mês" }.last?.amount ?? 0
+        let currentTotal = cumulativeChartData.filter { $0.series == "Este mês" }.last?.amount ?? 0 //todo: localizar
         let prevTotal    = cumulativeChartData.filter { $0.series == "Mês anterior" }.last?.amount ?? 0
         let topCategory  = categorySlices.first?.label
         let topMerchant  = merchantSlices.first?.label
@@ -1246,7 +1262,7 @@ struct TransactionListView: View {
                 id:     cat?.id.uuidString ?? "none",
                 label:  cat?.name ?? "Sem categoria",
                 amount: txs.reduce(0.0) { $0 + $1.amount },
-                color:  Color(hex: cat?.color ?? "#8E8E93"),
+                color:  Color(hex: cat?.color ?? "#8E8E93"), //todo:localizar
                 icon:   cat?.icon
             )
         }
@@ -1272,7 +1288,7 @@ struct TransactionListView: View {
                          color: palette[idx % palette.count], icon: nil)
         }
         if !rest.isEmpty {
-            slices.append(PieSliceData(id: "outros", label: "Outros",
+            slices.append(PieSliceData(id: "outros", label: "Outros", //todo: localizar
                                        amount: rest.reduce(0.0) { $0 + $1.amount },
                                        color: .gray, icon: nil))
         }
@@ -1302,9 +1318,11 @@ struct TransactionListView: View {
             transactionsInsightsColumn
                 .frame(width: 420)
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 24)
         .padding(.top, 18)
         .padding(.bottom, 24)
+        .frame(maxWidth: regularContentMaxWidth)
+        .frame(maxWidth: .infinity)
         .background(WorkspaceBackground(isRegularLayout: true))
     }
 
@@ -1953,10 +1971,19 @@ private struct PieChartCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(title)
-                .font(.headline)
-                .foregroundStyle(.primary)
-
+            
+            HStack(spacing: 8) {
+            
+                Image(systemName: "chart.pie.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.red)
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+            }
+            
+            
+            
             if validSlices.isEmpty {
                 Text(t("dashboard.noData"))
                     .font(.subheadline)
@@ -2040,7 +2067,7 @@ private struct PieChartCardView: View {
             }
         }
         .padding(16)
-        .background(Color(.systemBackground))
+       // .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
     }

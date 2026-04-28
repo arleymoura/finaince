@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import LocalAuthentication
 
 // MARK: - App Phase State Machine
 
@@ -19,6 +20,8 @@ struct ContentView: View {
     @State private var splashMode: SplashMode = .brand
     @State private var sharedImportManager = SharedImportManager.shared
     @State private var deepLinkManager = DeepLinkManager.shared
+    @State private var lockManager = AppLockManager.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Keeps a reference so SwiftUI re-renders when language changes
     private var lm: LanguageManager { LanguageManager.shared }
@@ -61,6 +64,43 @@ struct ContentView: View {
         .dynamicTypeSize(.large ... .accessibility5)
         .preferredColorScheme(preferredScheme)
         .animation(.easeInOut(duration: 0.4), value: phase)
+        // ── App Lock ──────────────────────────────────────────────────────────
+        .overlay {
+            if lockManager.isObscured {
+                PrivacyVeilView()
+                    .transition(.opacity)
+                    .zIndex(100)
+            }
+        }
+        .overlay {
+            if lockManager.isLocked {
+                AppLockView()
+                    .transition(.opacity)
+                    .zIndex(99)
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: lockManager.isLocked)
+        .animation(.easeInOut(duration: 0.15), value: lockManager.isObscured)
+        // Lock when entering background so the screen is already hidden when app returns
+        .onChange(of: scenePhase) { _, newPhase in
+            switch newPhase {
+            case .background:
+                lockManager.obscure()
+                if phase == .main { lockManager.lockIfEnabled() }
+            case .inactive:
+                break
+            case .active:
+                lockManager.reveal()
+            @unknown default:
+                break
+            }
+        }
+        // Cold launch: phase starts as .splash; lock as soon as main becomes visible
+        .onChange(of: phase) { _, newPhase in
+            if newPhase == .main {
+                lockManager.lockIfEnabled()
+            }
+        }
         .onOpenURL { url in
             // finaince://shared-image → image from Share Extension
             if url.scheme == "finaince" && url.host == "shared-image" {

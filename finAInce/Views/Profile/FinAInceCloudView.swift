@@ -11,6 +11,9 @@ struct FinAInceCloudView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var entitlements = EntitlementManager.shared
 
+    /// DEBUG only — força exibição do fluxo de compra independente do estado de entitlement
+    var debugForceShowPaywall: Bool = false
+
     // Gradiente da marca finAInce Cloud
     private let cloudColors: [Color] = [
         Color(red: 0.20, green: 0.45, blue: 0.90),
@@ -20,7 +23,7 @@ struct FinAInceCloudView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if entitlements.purchaseState == .purchasedPendingRestart {
+                if entitlements.purchaseState == .purchasedPendingRestart && !debugForceShowPaywall {
                     purchaseSuccessSection
                 } else {
                     ScrollView {
@@ -124,7 +127,7 @@ struct FinAInceCloudView: View {
         VStack(spacing: 20) {
             featureList
 
-            if entitlements.purchaseState == .active {
+            if entitlements.purchaseState == .active && !debugForceShowPaywall {
                 activeConfirmationSection
             } else {
                 priceSection

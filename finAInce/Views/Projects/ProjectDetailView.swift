@@ -132,6 +132,17 @@ struct ProjectDetailView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    Button {
+                        withAnimation { project.isActive.toggle() }
+                    } label: {
+                        Label(
+                            project.isActive ? t("projects.deactivate") : t("projects.activate"),
+                            systemImage: project.isActive ? "pause.circle" : "play.circle"
+                        )
+                    }
+
+                    Divider()
+
                     Button(role: .destructive) {
                         showDeleteAlert = true
                     } label: {

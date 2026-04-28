@@ -47,6 +47,8 @@
 	<false/>
 	<key>NSCameraUsageDescription</key>
 	<string>Usamos a camera para escanear recibos e anexar imagens as suas transacoes e conversas.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Use o Face ID para proteger seus dados financeiros e desbloquear o finAInce.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Usamos sua localizacao para sugerir estabelecimentos proximos ao registrar uma transacao.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
