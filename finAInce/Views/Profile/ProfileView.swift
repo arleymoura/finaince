@@ -584,11 +584,16 @@ struct GoalsListView: View {
     @State private var goalToEdit: Goal? = nil
 
     var body: some View {
+       
+        
+       
+        
         List {
             Section {
                 if goals.isEmpty {
                     emptyGoals
                 } else {
+                   
                     ForEach(goals) { goal in
                         GoalRowView(goal: goal)
                             .contentShape(Rectangle())
@@ -608,11 +613,13 @@ struct GoalsListView: View {
                         }
                     }
                 }
+            }header: {
+                Text(t("profile.goals.subtitle"))
             }
         }
         .listStyle(.insetGrouped)
         .navigationTitle(t("profile.goals"))
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {

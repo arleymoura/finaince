@@ -1705,16 +1705,18 @@ struct DashboardView: View {
 
         return VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "chart.xyaxis.line")
-                            .font(.subheadline)
-                            .foregroundStyle(.purple)
-                        Text(t("transaction.monthEvolution"))
-                            .font(.headline)
-                    }
+                
+                HStack(spacing: 8) {
+                    Image(systemName: "chart.xyaxis.line")
+                        .font(.subheadline)
+                        .foregroundStyle(.purple)
+                    Text(t("transaction.monthEvolution"))
+                        .font(.headline)
+                }
+          
+                Spacer()
 
-                    if hasPrevious {
+                if hasPrevious {
                         HStack(spacing: 4) {
                             Image(systemName: percent >= 0 ? "arrow.up.right" : "arrow.down.right")
                                 .font(.caption2.weight(.bold))
@@ -1722,16 +1724,12 @@ struct DashboardView: View {
                                 .font(.caption)
                         }
                         .foregroundStyle(percent > 0 ? Color.red : Color.green)
-                    }
                 }
 
-                Spacer()
-
-                Text(currentTotal.asCurrency(currencyCode))
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(.primary)
-                    .contentTransition(.numericText())
+                
             }
+
+            Divider()
 
             Chart(data) { point in
                 AreaMark(
@@ -1743,7 +1741,7 @@ struct DashboardView: View {
 
                 LineMark(
                     x: .value("Dia", point.day),
-                    y: .value("Total", point.amount)
+                    y: .value("Total", point.amount) //localizar
                 )
                 .foregroundStyle(by: .value("Série", point.series))
                 .lineStyle(point.series == previousMonthSeries

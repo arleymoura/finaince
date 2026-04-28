@@ -464,6 +464,7 @@ enum Strings {
         "profile.goalsConfigured":  "%d configuradas",
         "profile.projects":         "Projetos",
         "profile.projectsActive":   "%d ativos",
+        "profile.goals.subtitle":   "Suas metas e previsões de gastos",
 
         // Projects
         "projects.title":           "Projetos",
@@ -1540,6 +1541,7 @@ enum Strings {
         "profile.goalsConfigured":  "%d configured",
         "profile.projects":         "Projects",
         "profile.projectsActive":   "%d active",
+        "profile.goals.subtitle": "Your goals and spending forecasts",
 
         // Projects
         "projects.title":           "Projects",
@@ -2610,6 +2612,7 @@ enum Strings {
         "profile.goalsConfigured":  "%d configuradas",
         "profile.projects":         "Proyectos",
         "profile.projectsActive":   "%d activos",
+        "profile.goals.subtitle": "Sus metas y previsiones de gastos",
 
         // Projects
         "projects.title":           "Proyectos",
