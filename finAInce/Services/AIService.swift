@@ -57,6 +57,7 @@ struct AIService {
         goals: [Goal] = [],
         accounts: [Account] = [],
         categories: [Category] = [],
+        projects: [CostCenter] = [],
         currencyCode: String = CurrencyOption.defaultCode,
         imageData: Data? = nil
     ) async throws -> AIServiceResult {
@@ -92,7 +93,15 @@ struct AIService {
             return AIServiceResult(content, draft: draft)
         }
 
-        let system = buildSystemPrompt(transactions: transactions)
+        let system = buildSystemPrompt(
+            messages: messages,
+            transactions: transactions,
+            goals: goals,
+            accounts: accounts,
+            categories: categories,
+            projects: projects,
+            currencyCode: currencyCode
+        )
 
         // ── Provedores cloud ───────────────────────────────────────────────
         guard let apiKey = KeychainHelper.load(forKey: settings.provider.keychainKey),
@@ -174,15 +183,31 @@ struct AIService {
 
     // MARK: - System prompt
 
-    private static func buildSystemPrompt(transactions: [Transaction]) -> String {
+    private static func buildSystemPrompt(
+        messages: [ChatMessage],
+        transactions: [Transaction],
+        goals: [Goal],
+        accounts: [Account],
+        categories: [Category],
+        projects: [CostCenter],
+        currencyCode: String
+    ) -> String {
         let cal = Calendar.current
         let now = Date()
         let year  = cal.component(.year,  from: now)
         let month = cal.component(.month, from: now)
         let appLanguage = LanguageManager.shared.effective
+        let currency = CurrencyOption(rawValue: currencyCode)
+            ?? CurrencyOption(rawValue: CurrencyOption.defaultCode)
+            ?? .usd
         let currentMonthName = now.formatted(.dateTime.month(.wide))
         let currentYear = cal.component(.year, from: now)
         let currentMonthNumber = cal.component(.month, from: now)
+        let latestUserQueryContext = messages
+            .filter { $0.role == .user }
+            .suffix(3)
+            .map(\.content)
+            .joined(separator: "\n")
 
         let thisMonth = transactions.filter {
             cal.component(.year,  from: $0.date) == year &&
@@ -198,28 +223,102 @@ struct AIService {
             let cat = tx.category?.displayName ?? "Uncategorized"
             byCategory[cat, default: 0] += tx.amount
         }
-        let fmt = NumberFormatter()
-        fmt.numberStyle = .currency
-        fmt.locale = appLanguage.locale
-        func brl(_ v: Double) -> String { fmt.string(from: NSNumber(value: v)) ?? "\(v)" }
-
         let catLines = byCategory
             .sorted { $0.value > $1.value }
-            .map { "• \($0.key): \(brl($0.value))" }
+            .map { "• \($0.key): \($0.value.asCurrency(currencyCode))" }
             .joined(separator: "\n")
 
         let txLines = thisMonth.prefix(30).map { tx in
             let place = tx.placeName ?? "unknown merchant"
             let cat   = tx.category?.displayName ?? "uncategorized"
-            return "• \(brl(tx.amount)) — \(place) (\(cat))"
+            return "• \(tx.amount.asCurrency(currencyCode)) — \(place) (\(cat))"
         }.joined(separator: "\n")
+
+        let recentTransactionsBlock = transactions
+            .sorted { $0.date > $1.date }
+            .prefix(160)
+            .map { transaction in
+                let merchant = transaction.placeName ?? transaction.category?.displayName ?? "No description"
+                let category = transaction.category?.displayName ?? "Uncategorized"
+                let subcategory = transaction.subcategory?.displayName ?? "None"
+                let accountName = transaction.account?.name ?? "No account"
+                let notes = transaction.notes?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    ? transaction.notes!.replacingOccurrences(of: "\n", with: " ")
+                    : "None"
+                let projectName = projects.first(where: { $0.id == transaction.costCenterId })?.name ?? "None"
+                let receiptFlag = (transaction.receiptAttachments ?? []).isEmpty ? "no" : "yes"
+                return "- transaction | id=\(transaction.id.uuidString) | date=\(transaction.date.formatted(.dateTime.year().month().day())) | amount=\(transaction.amount.asCurrency(currencyCode)) | merchant=\(merchant) | category=\(category) | subcategory=\(subcategory) | account=\(accountName) | project=\(projectName) | notes=\(notes) | receipt=\(receiptFlag) | link=finaince://transaction/\(transaction.id.uuidString)"
+            }
+            .joined(separator: "\n")
+
+        let goalLinksBlock = goals
+            .sorted { $0.createdAt > $1.createdAt }
+            .map { goal in
+                let categoryName = goal.category?.displayName ?? "All spending"
+                return "- goal | id=\(goal.id.uuidString) | title=\(goal.title) | target=\(goal.targetAmount.asCurrency(currencyCode)) | category=\(categoryName) | link=finaince://goal/\(goal.id.uuidString)"
+            }
+            .joined(separator: "\n")
+
+        let categoryLinksBlock = Array(
+            Dictionary(
+                uniqueKeysWithValues: categories
+                    .filter { $0.parent == nil }
+                    .map { ($0.id, $0) }
+            ).values
+        )
+        .sorted { $0.sortOrder < $1.sortOrder }
+        .map { category in
+            "- category | id=\(category.id.uuidString) | name=\(category.displayName) | dashboard_link=finaince://category/\(category.id.uuidString) | transactions_link=finaince://transactions/category/\(category.id.uuidString)"
+        }
+        .joined(separator: "\n")
+
+        let projectLinksBlock = projects
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .map { project in
+                let status = project.isActive ? "active" : "inactive"
+                return "- project | id=\(project.id.uuidString) | name=\(project.name) | status=\(status) | link=finaince://project/\(project.id.uuidString)"
+            }
+            .joined(separator: "\n")
+
+        let accountLinksBlock = accounts
+            .sorted { $0.createdAt > $1.createdAt }
+            .map { account in
+                return "- account | id=\(account.id.uuidString) | name=\(account.name) | type=\(account.type.rawValue) | balance=\(account.balance.asCurrency(currencyCode)) | default=\(account.isDefault) | link=finaince://account/\(account.id.uuidString)"
+            }
+            .joined(separator: "\n")
+
+        let relevantTransactionsBlock = relevantTransactionsBlock(
+            for: latestUserQueryContext,
+            transactions: transactions,
+            projects: projects,
+            currencyCode: currencyCode
+        )
 
         return """
         You are the personal finance assistant inside the finAInce app.
+
         Help the user understand spending, identify patterns, and build healthier financial habits.
+
+        Your role is not only to analyze, but to actively help the user save money.
+
+        Always look for opportunities to reduce expenses in practical and realistic ways.
+
+        Go beyond obvious advice. Suggest creative, non-trivial ways the user can save money based on their behavior, patterns, and context.
+
+        Prioritize actionable recommendations over generic explanations.
+
+        When possible, show the impact of your suggestions (how much the user could save).
 
         ## Behavior rules
         - Reply in the user's preferred app language: \(responseLanguageInstruction()).
+        - The user's selected currency is \(currency.rawValue) and the currency symbol is \(currency.symbol).
+        - Always reason and answer using \(currency.rawValue). Never switch to BRL or use R$ unless the user explicitly asks for a conversion.
+        - When it helps the user act faster, include clickable markdown links using the app deep links.
+        - Markdown link format must be exactly: [short label](finaince://destination)
+        - The short label inside the markdown link MUST be written in the same language as the rest of your reply.
+        - Never output English link labels such as "Open transactions" unless the user's app language is English.
+        - Never wrap links in code blocks.
+        - Never invent IDs. Only use IDs and deep links explicitly listed in the navigation catalog below.
         - Be empathetic and never judge spending habits.
         - Keep responses short: at most 3 short paragraphs or one concise list.
         - Interpret the data instead of repeating raw numbers without context.
@@ -239,20 +338,63 @@ struct AIService {
         - Present the results directly, as if you naturally know the user's financial data.
         - If the request is ambiguous or lacks important context such as period, category, or account,
           ask one direct clarification question before answering.
+        - If the user asks to open, inspect, review, compare, edit, or navigate somewhere, prefer ending the answer with 1–3 markdown deep links when a valid destination exists.
+        - To open a receipt, use the transaction link of a transaction marked with receipt=yes.
+        - You DO have transaction-level data in the navigation catalog below. Do not say you only have category totals if transaction lines are present.
+        - If the user asks you to find a transaction, search the transaction catalog using merchant, category, subcategory, notes, account, project, amount, and receipt flag.
+        - When you find likely matches, mention the best 1 to 3 matches and attach direct transaction links.
+        - If the user asks about a category such as travel, groceries, fuel, pharmacy, or restaurants, search the transaction catalog for matching category and subcategory names before answering.
+        - If a "transactions most relevant to the latest user request" section exists below, use it as your primary source before falling back to the full transaction catalog.
+        - If the user wants to open or review the transactions of a category, prefer the category transactions link in the format finaince://transactions/category/CATEGORY_ID instead of the generic transactions list.
+
+        ## Deep link catalog
+        - Dashboard: [\(deepLinkLabel(for: .dashboard))](finaince://home)
+        - Transactions list: [\(deepLinkLabel(for: .transactions))](finaince://transactions)
+        - AI chat: [\(deepLinkLabel(for: .chat))](finaince://chat)
+        - Search: [\(deepLinkLabel(for: .search))](finaince://search)
+        - Profile: [\(deepLinkLabel(for: .profile))](finaince://profile)
+        - Settings: [\(deepLinkLabel(for: .settings))](finaince://settings)
+        - AI analysis flow: [\(deepLinkLabel(for: .analysis))](finaince://analysis)
+        - Month comparison: [\(deepLinkLabel(for: .monthComparison))](finaince://month-comparison)
 
         ## User financial data
         Today: \(now.formatted(.dateTime.day().month(.wide).year()))
         Current month (authoritative): \(currentMonthName) \(currentYear)
+        Currency (authoritative): \(currency.rawValue) (\(currency.symbol))
+        App language locale: \(appLanguage.locale.identifier)
         All transactions below already belong to this current month.
         Do not reinterpret or shift the time period.
 
-        Current month expenses — Total: \(brl(total))
+        Current month expenses — Total: \(total.asCurrency(currencyCode))
 
         By category:
         \(catLines.isEmpty ? "No expenses recorded." : catLines)
 
         Recent transactions:
         \(txLines.isEmpty ? "No expenses recorded." : txLines)
+
+        ## Transactions most relevant to the latest user request
+        User request context:
+        \(latestUserQueryContext.isEmpty ? "None." : latestUserQueryContext)
+
+        Relevant matches:
+        \(relevantTransactionsBlock)
+
+        ## Navigation catalog with real IDs
+        Transactions:
+        \(recentTransactionsBlock.isEmpty ? "- No transactions available for linking." : recentTransactionsBlock)
+
+        Goals:
+        \(goalLinksBlock.isEmpty ? "- No goals available for linking." : goalLinksBlock)
+
+        Categories:
+        \(categoryLinksBlock.isEmpty ? "- No categories available for linking." : categoryLinksBlock)
+
+        Projects:
+        \(projectLinksBlock.isEmpty ? "- No projects available for linking." : projectLinksBlock)
+
+        Accounts:
+        \(accountLinksBlock.isEmpty ? "- No accounts available for linking." : accountLinksBlock)
         """
     }
 
@@ -1130,6 +1272,123 @@ struct AIService {
         return responseText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    static func generateMonthComparisonInsight(
+        result: MonthComparisonResult,
+        currencyCode: String,
+        settings: AISettings
+    ) async throws -> String {
+        let fmt: (Double) -> String = { value in
+            let formatter = NumberFormatter()
+            formatter.numberStyle = .currency
+            formatter.currencyCode = currencyCode
+            formatter.maximumFractionDigits = 2
+            return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
+        }
+
+        let topIncrease = result.highlights.biggestIncrease.first?.name ?? "N/A"
+        let topDecrease = result.highlights.biggestDecrease.first?.name ?? "N/A"
+        let newCategories = result.highlights.newCategories.map(\.name).joined(separator: ", ")
+        let removedCategories = result.highlights.removedCategories.map(\.name).joined(separator: ", ")
+
+        let system = """
+        You are a personal finance advisor. Reply in the user's preferred app language: \(responseLanguageInstruction()).
+        Interpret the comparison only. Do not recalculate data. Use at most 3 short sentences. No markdown.
+        Focus on where the user spent more, where they saved, and what behavior changed.
+        """
+
+        let user = """
+        Expense month comparison:
+        - Base month: \(result.monthA.title())
+        - Comparison month: \(result.monthB.title())
+        - Total A: \(fmt(result.summary.totalA))
+        - Total B: \(fmt(result.summary.totalB))
+        - Goal A: \(fmt(result.summary.goalTotalA))
+        - Goal B: \(fmt(result.summary.goalTotalB))
+        - Difference: \(fmt(result.summary.difference))
+        - Percentage change: \(Int(result.summary.percentageChange.rounded()))%
+        - Biggest increase: \(topIncrease)
+        - Biggest decrease: \(topDecrease)
+        - New categories: \(newCategories.isEmpty ? "none" : newCategories)
+        - Removed categories: \(removedCategories.isEmpty ? "none" : removedCategories)
+        - Avg daily A: \(fmt(result.behavior.avgDailyA))
+        - Avg daily B: \(fmt(result.behavior.avgDailyB))
+        - Peak day A: \(result.behavior.peakDayA.label) \(fmt(result.behavior.peakDayA.total))
+        - Peak day B: \(result.behavior.peakDayB.label) \(fmt(result.behavior.peakDayB.total))
+        - Spending concentration A: \(result.behavior.distributionA.dominantSegment)
+        - Spending concentration B: \(result.behavior.distributionB.dominantSegment)
+
+        Give one concise interpretation with concrete behavior change.
+        """
+
+        if settings.provider == .local {
+            let response = await LocalAIService.generate(prompt: "\(system)\n\n\(user)")
+            return response?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        }
+
+        guard let apiKey = KeychainHelper.load(forKey: settings.provider.keychainKey),
+              !apiKey.isEmpty else { throw AIError.noAPIKey }
+
+        let raw: [[String: String]] = [[
+            "role": "user",
+            "content": user
+        ]]
+
+        let responseText: String
+        switch settings.provider {
+        case .local:
+            fatalError("handled above")
+        case .groq:
+            responseText = try await sendRawOpenAICompatible(
+                raw, model: settings.model, apiKey: apiKey, system: system,
+                baseURL: "https://api.groq.com/openai/v1/chat/completions"
+            )
+        case .deepseek:
+            responseText = try await sendRawOpenAICompatible(
+                raw, model: settings.model, apiKey: apiKey, system: system,
+                baseURL: "https://api.deepseek.com/v1/chat/completions"
+            )
+        case .openai:
+            responseText = try await sendRawOpenAICompatible(
+                raw, model: settings.model, apiKey: apiKey, system: system,
+                baseURL: "https://api.openai.com/v1/chat/completions"
+            )
+        case .gemini:
+            responseText = try await sendRawGemini(
+                raw, model: settings.model, apiKey: apiKey, system: system
+            )
+        case .anthropic:
+            responseText = try await sendRawAnthropic(
+                raw, model: settings.model, apiKey: apiKey, system: system
+            )
+        case .openrouter:
+            responseText = try await sendRawOpenAICompatible(
+                raw, model: settings.model, apiKey: apiKey, system: system,
+                baseURL: "https://openrouter.ai/api/v1/chat/completions"
+            )
+        case .cerebras:
+            responseText = try await sendRawOpenAICompatible(
+                raw, model: settings.model, apiKey: apiKey, system: system,
+                baseURL: "https://api.cerebras.ai/v1/chat/completions"
+            )
+        case .huggingface:
+            responseText = try await sendRawOpenAICompatible(
+                raw, model: settings.model, apiKey: apiKey, system: system,
+                baseURL: "https://router.huggingface.co/v1/chat/completions"
+            )
+        case .mistral:
+            responseText = try await sendRawOpenAICompatible(
+                raw, model: settings.model, apiKey: apiKey, system: system,
+                baseURL: "https://api.mistral.ai/v1/chat/completions"
+            )
+        case .cohere:
+            responseText = try await sendRawCohere(
+                raw, model: settings.model, apiKey: apiKey, system: system
+            )
+        }
+
+        return responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: - Two-step local categorisation (Apple Intelligence)
 
     /// Asks Apple Intelligence two short plain-text questions instead of requesting JSON.
@@ -1730,6 +1989,17 @@ struct AIService {
 }
 
 private extension AIService {
+    enum PromptDeepLinkLabel {
+        case dashboard
+        case transactions
+        case chat
+        case search
+        case profile
+        case settings
+        case analysis
+        case monthComparison
+    }
+
     static func responseLanguageInstruction() -> String {
         switch LanguageManager.shared.effective {
         case .ptBR:
@@ -1741,6 +2011,111 @@ private extension AIService {
         case .system:
             return "English (en)"
         }
+    }
+
+    static func deepLinkLabel(for label: PromptDeepLinkLabel) -> String {
+        switch LanguageManager.shared.effective {
+        case .ptBR, .system:
+            switch label {
+            case .dashboard: return "Abrir início"
+            case .transactions: return "Abrir transações"
+            case .chat: return "Abrir chat"
+            case .search: return "Abrir busca"
+            case .profile: return "Abrir perfil"
+            case .settings: return "Abrir configurações"
+            case .analysis: return "Analisar com IA"
+            case .monthComparison: return "Comparar meses"
+            }
+        case .en:
+            switch label {
+            case .dashboard: return "Open dashboard"
+            case .transactions: return "Open transactions"
+            case .chat: return "Open chat"
+            case .search: return "Open search"
+            case .profile: return "Open profile"
+            case .settings: return "Open settings"
+            case .analysis: return "Analyze with AI"
+            case .monthComparison: return "Compare months"
+            }
+        case .es:
+            switch label {
+            case .dashboard: return "Abrir inicio"
+            case .transactions: return "Abrir transacciones"
+            case .chat: return "Abrir chat"
+            case .search: return "Abrir búsqueda"
+            case .profile: return "Abrir perfil"
+            case .settings: return "Abrir configuración"
+            case .analysis: return "Analizar con IA"
+            case .monthComparison: return "Comparar meses"
+            }
+        }
+    }
+
+    static func relevantTransactionsBlock(
+        for query: String,
+        transactions: [Transaction],
+        projects: [CostCenter],
+        currencyCode: String
+    ) -> String {
+        let queryTokens = searchTokens(from: query)
+        guard !queryTokens.isEmpty else {
+            return "- No explicit transaction search terms detected."
+        }
+
+        let scored = transactions.compactMap { transaction -> (Transaction, Int)? in
+            let merchant = transaction.placeName ?? ""
+            let category = transaction.category?.displayName ?? ""
+            let subcategory = transaction.subcategory?.displayName ?? ""
+            let account = transaction.account?.name ?? ""
+            let notes = transaction.notes ?? ""
+            let project = projects.first(where: { $0.id == transaction.costCenterId })?.name ?? ""
+            let haystackParts = [merchant, category, subcategory, account, notes, project]
+            let haystack = haystackParts
+                .map { $0.normalizedForMatching() }
+                .joined(separator: " ")
+
+            var score = 0
+            for token in queryTokens {
+                if token.count >= 4 && haystack.contains(token) {
+                    score += 3
+                } else if token.count >= 3 && haystack.contains(token) {
+                    score += 2
+                }
+            }
+
+            if score == 0 { return nil }
+            if transaction.receiptAttachments?.isEmpty == false { score += 1 }
+            return (transaction, score)
+        }
+        .sorted {
+            if $0.1 == $1.1 { return $0.0.date > $1.0.date }
+            return $0.1 > $1.1
+        }
+        .prefix(8)
+
+        guard !scored.isEmpty else {
+            return "- No direct transaction matches were found for the latest request."
+        }
+
+        return scored.map { transaction, score in
+            let merchant = transaction.placeName ?? transaction.category?.displayName ?? "No description"
+            let category = transaction.category?.displayName ?? "Uncategorized"
+            let subcategory = transaction.subcategory?.displayName ?? "None"
+            let account = transaction.account?.name ?? "No account"
+            let project = projects.first(where: { $0.id == transaction.costCenterId })?.name ?? "None"
+            let receiptFlag = (transaction.receiptAttachments ?? []).isEmpty ? "no" : "yes"
+            return "- match(score=\(score)) | id=\(transaction.id.uuidString) | date=\(transaction.date.formatted(.dateTime.year().month().day())) | amount=\(transaction.amount.asCurrency(currencyCode)) | merchant=\(merchant) | category=\(category) | subcategory=\(subcategory) | account=\(account) | project=\(project) | receipt=\(receiptFlag) | link=finaince://transaction/\(transaction.id.uuidString)"
+        }
+        .joined(separator: "\n")
+    }
+
+    static func searchTokens(from text: String) -> [String] {
+        text
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count >= 3 }
+            .map { $0.normalizedForMatching() }
+            .filter { !$0.isEmpty }
     }
 
     /// Returns a language-aware context block for merchant categorization prompts.

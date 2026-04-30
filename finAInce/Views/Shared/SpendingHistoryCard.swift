@@ -82,6 +82,7 @@ struct SpendingHistoryCard: View {
                             .foregroundStyle(.teal)
                         Text(t("dashboard.spendingHistory"))
                             .font(.headline)
+                            .foregroundStyle(FinAInceColor.primaryText)
                     }
                     if let delta {
                         let sign: String = delta >= 0 ? "+" : ""
@@ -92,7 +93,7 @@ struct SpendingHistoryCard: View {
                     } else {
                         Text(t("dashboard.lastMonthsForecast"))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(FinAInceColor.secondaryText)
                     }
                 }
                 Spacer()
@@ -186,7 +187,7 @@ struct SpendingHistoryCard: View {
                                 })?.isCurrent == true
                                 Text(monthLabel(date))
                                     .font(.caption2.weight(isCur ? .bold : .regular))
-                                    .foregroundStyle(isCur ? Color.primary : Color.secondary)
+                                    .foregroundStyle(isCur ? FinAInceColor.primaryText : FinAInceColor.secondaryText)
                             }
                         }
                     }
@@ -212,11 +213,11 @@ struct SpendingHistoryCard: View {
             }
             .padding(16)
         }
-        .background(Color(.secondarySystemBackground))
+        .background(FinAInceColor.elevatedSurface)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .overlay(
             RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(Color.primary.opacity(0.03), lineWidth: 1)
+                .strokeBorder(FinAInceColor.borderSubtle, lineWidth: 1)
         )
     }
 
@@ -226,10 +227,10 @@ struct SpendingHistoryCard: View {
         VStack(spacing: 2) {
             Text(monthLabel(point.date, wide: true))
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(FinAInceColor.secondaryText)
             Text(point.amount.asCurrency(currencyCode))
                 .font(.subheadline.weight(.bold))
-                .foregroundStyle(point.isForecast && !point.isCurrent ? Color.orange : Color.primary)
+                .foregroundStyle(point.isForecast && !point.isCurrent ? Color.orange : FinAInceColor.primaryText)
             if point.isForecast && !point.isCurrent {
                 Text(t("transaction.forecastLowercase"))
                     .font(.caption2)
@@ -238,8 +239,12 @@ struct SpendingHistoryCard: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 10))
-        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+        .background(FinAInceColor.primarySurface, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(FinAInceColor.borderSubtle, lineWidth: 1)
+        )
+        .shadow(color: FinAInceColor.borderStrong.opacity(0.25), radius: 8, y: 3)
     }
 
     @ViewBuilder
@@ -260,7 +265,7 @@ struct SpendingHistoryCard: View {
             }
             Text(label)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(FinAInceColor.secondaryText)
         }
     }
 

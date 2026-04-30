@@ -85,7 +85,9 @@ struct GoalFormView: View {
                 // Valor limite
                 Section(t("goal.amount")) {
                     HStack {
-                        Text(CurrencyOption(rawValue: currencyCode)?.symbol ?? "R$")
+                        Text((CurrencyOption(rawValue: currencyCode)
+                              ?? CurrencyOption(rawValue: CurrencyOption.defaultCode)
+                              ?? .usd).symbol)
                             .foregroundStyle(.secondary)
                         TextField("0,00", text: $targetText)
                             .keyboardType(.decimalPad)

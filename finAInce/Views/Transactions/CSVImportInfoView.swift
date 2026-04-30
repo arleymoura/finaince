@@ -15,9 +15,12 @@ private struct IdentifiableURL: Identifiable, Hashable {
 
 struct CSVImportInfoView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showPicker  = false
     @State private var pickedURL: IdentifiableURL? = nil
     @State private var lastImportedSummary: ImportedStatementSummary? = ImportStatementStore.currentSummary()
+
+    private var isRegularLayout: Bool { horizontalSizeClass == .regular }
 
     // MARK: - Body
 
@@ -88,6 +91,8 @@ struct CSVImportInfoView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
+        .presentationDetents(isRegularLayout ? [.fraction(0.82), .large] : [.large])
+        .presentationDragIndicator(.visible)
     }
 
     // MARK: - Info content
@@ -118,6 +123,8 @@ struct CSVImportInfoView: View {
             .padding(.horizontal, 24)
             .padding(.top, 32)
             .padding(.bottom, 40)
+            .frame(maxWidth: isRegularLayout ? 760 : .infinity)
+            .frame(maxWidth: .infinity)
         }
         .navigationTitle(t("import.navTitle"))
         .navigationBarTitleDisplayMode(.inline)

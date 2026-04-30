@@ -3,27 +3,80 @@ import SwiftData
 import UIKit
 
 struct AIProviderSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query private var settingsList: [AISettings]
 
     @State private var editingProvider: AIProvider? = nil
+    private var isRegularLayout: Bool { horizontalSizeClass == .regular }
 
     private var activeSettings: AISettings? {
         settingsList.first(where: { $0.isConfigured })
     }
 
     var body: some View {
+        Group {
+            if isRegularLayout {
+                regularAIProviderSettingsView
+            } else {
+                settingsForm
+                    .navigationTitle(t("settings.ai"))
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        .sheet(item: $editingProvider) { provider in
+            AIKeyEditSheet(provider: provider, settings: activeSettings, modelContext: modelContext)
+        }
+    }
+
+    private var settingsForm: some View {
         Form {
             introSection
             activeSection
             otherProvidersSection
         }
         .listSectionSpacing(.compact)
-        .navigationTitle(t("settings.ai"))
-        .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $editingProvider) { provider in
-            AIKeyEditSheet(provider: provider, settings: activeSettings, modelContext: modelContext)
+    }
+
+    private var regularAIProviderSettingsView: some View {
+        GeometryReader { proxy in
+            ZStack {
+                FinAInceColor.groupedBackground
+                    .ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    HStack(spacing: FinAInceSpacing.sectionGap) {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 38, height: 38)
+                                .background(FinAInceColor.secondarySurface)
+                                .clipShape(Circle())
+                        }
+
+                        Text(t("settings.ai"))
+                            .finPageTitleStyle()
+
+                        Spacer()
+                    }
+                    .padding(.horizontal, FinAInceSpacing.screenHorizontal)
+                    .padding(.top, proxy.safeAreaInsets.top + FinAInceSpacing.headerTop)
+                    .padding(.bottom, FinAInceSpacing.headerBottom)
+                    .finRegularContentFrame()
+                    .background(FinAInceColor.groupedBackground)
+
+                    settingsForm
+                        .finRegularContentFrame()
+                        .scrollContentBackground(.hidden)
+                        .background(Color.clear)
+                }
+            }
         }
+        .toolbar(.hidden, for: .navigationBar)
     }
 
     // MARK: - Intro

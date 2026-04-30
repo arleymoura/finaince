@@ -33,7 +33,7 @@ struct InsightCard: View {
                             .tracking(0.5)
                         Text(insight.title)
                             .font(.subheadline.bold())
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(FinAInceColor.primaryText)
                             .lineLimit(1)
                     }
 
@@ -47,7 +47,7 @@ struct InsightCard: View {
                 // Body
                 Text(insight.body)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FinAInceColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                     .lineLimit(2)
 
@@ -66,10 +66,10 @@ struct InsightCard: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(insight.color.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
+            .background(FinAInceColor.tintSurface, in: RoundedRectangle(cornerRadius: 16))
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
-                    .stroke(insight.color.opacity(0.18), lineWidth: 1)
+                    .stroke(FinAInceColor.borderSubtle, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)

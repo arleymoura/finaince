@@ -22,11 +22,11 @@ struct GoalProgressCard: View {
 
     private var status: (message: String, color: Color) {
         switch percentage {
-        case ..<50:    return ("Ótimo ritmo! Continue assim", .green)
-        case 50..<75:  return ("Indo bem, fique atento", .green)
-        case 75..<90:  return ("Atenção! Chegando no limite", .orange)
-        case 90..<100: return ("Quase no limite! Cuidado", .red)
-        default:       return ("Meta ultrapassada", .red)
+        case ..<50:    return (t("goal.status.great"), .green)
+        case 50..<75:  return (t("goal.status.good"), .green)
+        case 75..<90:  return (t("goal.status.warning"), .orange)
+        case 90..<100: return (t("goal.status.danger"), .red)
+        default:       return (t("goal.status.exceeded"), .red)
         }
     }
 
@@ -53,7 +53,7 @@ struct GoalProgressCard: View {
                         HStack(spacing: 3) {
                             Text(cat.displayName)
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(FinAInceColor.secondaryText)
                             if onTap != nil {
                                 Image(systemName: "chevron.right")
                                     .font(.system(size: 8, weight: .semibold))
@@ -71,14 +71,14 @@ struct GoalProgressCard: View {
                         .foregroundStyle(status.color)
                     Text(t("goal.ofAmount", goal.targetAmount.asCurrency(currencyCode)))
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                 }
             }
 
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(Color(.systemFill))
+                        .fill(FinAInceColor.insetSurface)
                         .frame(height: 12)
 
                     RoundedRectangle(cornerRadius: 6)
@@ -92,7 +92,7 @@ struct GoalProgressCard: View {
                         .animation(.easeOut(duration: 0.5), value: spent)
 
                     Rectangle()
-                        .fill(Color(.systemBackground))
+                        .fill(FinAInceColor.primarySurface)
                         .frame(width: 2, height: 16)
                         .offset(x: geo.size.width - 2)
                 }
@@ -103,7 +103,7 @@ struct GoalProgressCard: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(t("goal.paidAmount", spent.asCurrency(currencyCode)))
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                     if forecast > spent {
                         Text(t("goal.expectedAmount", forecast.asCurrency(currencyCode)))
                             .font(.caption2)
@@ -118,8 +118,12 @@ struct GoalProgressCard: View {
             }
         }
         .padding(12)
-        .background(status.color.opacity(0.07))
+        .background(FinAInceColor.tintSurface)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(FinAInceColor.borderSubtle, lineWidth: 1)
+        )
     }
 }
 
@@ -175,13 +179,13 @@ struct CompactGoalProgressCard: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(goal.title)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(FinAInceColor.primaryText)
                         .lineLimit(2)
                         .minimumScaleFactor(0.75)
 
                     Text(forecast.asCurrency(currencyCode))
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
                 }
@@ -189,7 +193,7 @@ struct CompactGoalProgressCard: View {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Capsule()
-                            .fill(Color(.systemFill))
+                            .fill(FinAInceColor.insetSurface)
                         Capsule()
                             .fill(statusColor)
                             .frame(width: geo.size.width * progress)
@@ -200,8 +204,12 @@ struct CompactGoalProgressCard: View {
             .padding(10)
             .frame(maxWidth: .infinity)
             .aspectRatio(1, contentMode: .fit)
-            .background(statusColor.opacity(0.07))
+            .background(FinAInceColor.tintSurface)
             .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(FinAInceColor.borderSubtle, lineWidth: 1)
+            )
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)

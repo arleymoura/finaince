@@ -13,10 +13,12 @@ struct ChatView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.colorScheme) private var colorScheme
     @Query(sort: \Transaction.date, order: .reverse) private var transactions: [Transaction]
     @Query private var goals: [Goal]
     @Query private var accounts: [Account]
     @Query private var categories: [Category]
+    @Query private var costCenters: [CostCenter]
     @Query private var aiSettings: [AISettings]
     @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
     @State private var chatNavigationManager = ChatNavigationManager.shared
@@ -38,6 +40,7 @@ struct ChatView: View {
     @State private var createdTransactionByMessageId: [UUID: Transaction] = [:]
     @State private var lastCreatedMessageId: UUID? = nil
     @State private var transactionToView: Transaction? = nil
+    @State private var deepLinkManager = DeepLinkManager.shared
     @FocusState private var isInputFocused: Bool
     @State private var deepAnalysisOfferShown = false
     @State private var deepAnalysisSharePayload: DeepAnalysisSharePayload? = nil
@@ -64,6 +67,16 @@ struct ChatView: View {
     private var isConfigured: Bool { activeSettings != nil }
     private var isRegularLayout: Bool { horizontalSizeClass == .regular }
     private var hasAttachment: Bool { attachedImage != nil || attachedCSVName != nil }
+    private var chatGlassFill: Color { colorScheme == .dark ? .white.opacity(0.08) : .white.opacity(0.14) }
+    private var chatGlassStrongFill: Color { colorScheme == .dark ? .white.opacity(0.10) : .white.opacity(0.16) }
+    private var chatGlassSoftFill: Color { colorScheme == .dark ? .white.opacity(0.07) : .white.opacity(0.12) }
+    private var chatGlassBorder: Color { colorScheme == .dark ? .white.opacity(0.10) : .white.opacity(0.18) }
+    private var regularHeaderTopColor: Color {
+        colorScheme == .dark ? Color(red: 0.34, green: 0.25, blue: 0.72) : Color.accentColor.opacity(0.95)
+    }
+    private var regularHeaderBottomColor: Color {
+        colorScheme == .dark ? Color(red: 0.18, green: 0.14, blue: 0.36) : Color.accentColor.opacity(0.65)
+    }
     private var canSend: Bool {
         (!inputText.trimmingCharacters(in: .whitespaces).isEmpty || hasAttachment) && !isLoading
     }
@@ -77,40 +90,78 @@ struct ChatView: View {
         ]
     }
 
+    private struct QuickReplyAction: Identifiable {
+        enum Kind {
+            case sendText(String)
+            case openDeepLink(URL)
+        }
+
+        let id: String
+        let title: String
+        let kind: Kind
+    }
+
+    private var quickReplyActions: [QuickReplyAction] {
+        guard let lastAssistantMessage = messages.last, lastAssistantMessage.role == .assistant else {
+            return []
+        }
+
+        guard pendingDraft == nil,
+              pendingDeepAnalysisOffer == nil,
+              pendingDeepAnalysisPrompt == nil,
+              !isLoading else {
+            return []
+        }
+
+        if !assistantMessageNeedsQuickReply(lastAssistantMessage.content) {
+            return deepLinkQuickReplyActions(from: lastAssistantMessage.content)
+        }
+
+        var actions: [QuickReplyAction] = [
+            QuickReplyAction(id: "reply-yes", title: t("common.yes"), kind: .sendText(t("common.yes"))),
+            QuickReplyAction(id: "reply-no", title: t("common.no"), kind: .sendText(t("common.no")))
+        ]
+        actions.append(contentsOf: deepLinkQuickReplyActions(from: lastAssistantMessage.content))
+        return Array(actions.prefix(4))
+    }
+
     // MARK: - Body
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                WorkspaceBackground(isRegularLayout: isRegularLayout)
-                    .ignoresSafeArea()
+            GeometryReader { proxy in
+                ZStack {
+                    WorkspaceBackground(isRegularLayout: isRegularLayout)
+                        .ignoresSafeArea()
 
-                VStack(spacing: 0) {
-                    Group {
-                        if !isConfigured {
-                            notConfiguredView
-                        } else if messages.isEmpty {
-                            suggestionsView
-                        } else {
-                            chatScrollView
+                    VStack(spacing: 0) {
+                        chatHeaderCard(topInset: proxy.safeAreaInsets.top)
+                            .ignoresSafeArea(edges: .top)
+
+                        Group {
+                            if !isConfigured {
+                                notConfiguredView
+                            } else if messages.isEmpty {
+                                suggestionsView
+                            } else {
+                                chatScrollView
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: isRegularLayout ? regularContentMaxWidth : .infinity)
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(
+                            TapGesture().onEnded { dismissKeyboard() }
+                        )
+
+                        if isConfigured {
+                            inputSection
+                                .frame(maxWidth: isRegularLayout ? regularContentMaxWidth : .infinity)
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .frame(maxWidth: isRegularLayout ? regularContentMaxWidth : .infinity)
-                    .contentShape(Rectangle())
-                    .simultaneousGesture(
-                        TapGesture().onEnded { dismissKeyboard() }
-                    )
-
-                    if isConfigured {
-                        inputSection
-                            .frame(maxWidth: isRegularLayout ? regularContentMaxWidth : .infinity)
-                    }
                 }
-            }
-            .animation(.spring(duration: 0.3), value: pendingDraft != nil)
-            .safeAreaInset(edge: .top, spacing: 0) {
-                chatHeaderCard
+                .animation(.spring(duration: 0.3), value: pendingDraft != nil)
+                .padding(.top, -50)
             }
             .toolbar(.hidden, for: .navigationBar)
             .onAppear {
@@ -265,123 +316,162 @@ struct ChatView: View {
         }
     }
 
-    // MARK: - Header Card (Profile-style)
+    // MARK: - Header
 
-    private var chatHeaderCard: some View {
-        HStack(alignment: .center, spacing: 14) {
-
-            // ── AI icon ───────────────────────────────────────────────────
-            ZStack {
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.55, green: 0.20, blue: 0.95),
-                                Color(red: 0.40, green: 0.10, blue: 0.80)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 52, height: 52)
-                Image(systemName: "sparkles")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.white)
+    private func chatHeaderCard(topInset: CGFloat) -> some View {
+        Group {
+            if isRegularLayout {
+                regularChatHeader(topInset: topInset)
+            } else {
+                compactChatHeader(topInset: topInset)
             }
-            .shadow(color: Color(red: 0.45, green: 0.10, blue: 0.85).opacity(0.35),
-                    radius: 8, x: 0, y: 4)
+        }
+    }
 
-            // ── Title + provider ──────────────────────────────────────────
-            VStack(alignment: .leading, spacing: 3) {
+    private func compactChatHeader(topInset: CGFloat) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            chatHeaderLeadingContent
+
+            Spacer()
+
+            chatHeaderTrailingAction
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, topInset + 16)
+        .padding(.bottom, 18)
+        .background(chatHeaderBackground)
+        .clipShape(
+            UnevenRoundedRectangle(
+                cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24)
+            )
+        )
+        .shadow(color: regularHeaderBottomColor.opacity(colorScheme == .dark ? 0.28 : 0.20), radius: 14, x: 0, y: 8)
+    }
+
+    private func regularChatHeader(topInset: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 18) {
+            chatHeaderLeadingContent
+
+            Spacer(minLength: 16)
+
+            chatHeaderTrailingAction
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, topInset + 16)
+        .padding(.bottom, 24)
+        .frame(maxWidth: regularContentMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity)
+        .background(chatHeaderBackground)
+        .clipShape(
+            UnevenRoundedRectangle(
+                cornerRadii: .init(bottomLeading: 28, bottomTrailing: 28)
+            )
+        )
+        .shadow(color: Color.accentColor.opacity(0.20), radius: 14, x: 0, y: 8)
+    }
+
+    private var chatHeaderLeadingContent: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image("Avatar")
+                .resizable()
+                .scaledToFill()
+                .frame(width: isRegularLayout ? 56 : 52, height: isRegularLayout ? 56 : 52)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(chatGlassBorder, lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.12), radius: 12, x: 0, y: 6)
+
+            VStack(alignment: .leading, spacing: 8) {
                 (Text("fin")
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(.white)
                 + Text("AI")
-                    .foregroundStyle(Color(red: 0.55, green: 0.20, blue: 0.95))
+                    .foregroundStyle(FinAInceColor.inverseText.opacity(0.92))
                 + Text("nce")
-                    .foregroundStyle(.primary))
-                .font(.largeTitle.weight(.bold))
+                    .foregroundStyle(.white))
+                .font(.system(size: 30, weight: .bold, design: .rounded))
 
                 if isConfigured, let s = activeSettings {
                     Button { showAISettings = true } label: {
-                        HStack(spacing: 5) {
+                        HStack(spacing: 6) {
                             Image(systemName: s.provider.iconName)
                                 .font(.caption2.weight(.semibold))
                             Text(s.provider.modelDisplayName(s.model))
-                                .font(.caption)
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
                         }
-                        .foregroundStyle(s.provider.accentColor)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(s.provider.accentColor.opacity(0.10))
+                        .foregroundStyle(.white.opacity(0.95))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(chatGlassFill)
                         .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
                 } else {
                     Text(t("ai.smartAssistant"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.80))
                 }
             }
 
-            Spacer()
+        }
+    }
 
-            // ── Actions ───────────────────────────────────────────────────
+    private var chatHeaderTrailingAction: some View {
+        Group {
             if isConfigured {
                 Button { clearChat() } label: {
                     Image(systemName: "square.and.pencil")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.50, green: 0.15, blue: 0.90))
-                        .frame(width: 38, height: 38)
-                        .background(Color(red: 0.50, green: 0.15, blue: 0.90).opacity(0.10))
+                        .foregroundStyle(.white.opacity(0.95))
+                        .frame(width: 42, height: 42)
+                        .background(chatGlassStrongFill)
                         .clipShape(Circle())
                 }
+                .buttonStyle(.plain)
             } else {
                 Button { showSetup = true } label: {
                     Text(t("common.configure"))
-                        .font(.caption.bold())
-                        .foregroundStyle(.white)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color.accentColor)
                         .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .background(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 0.55, green: 0.20, blue: 0.95),
-                                    Color(red: 0.40, green: 0.10, blue: 0.80)
-                                ],
-                                startPoint: .leading, endPoint: .trailing
-                            )
-                        )
+                        .padding(.vertical, 9)
+                        .background(FinAInceColor.primaryActionForeground)
                         .clipShape(Capsule())
                 }
+                .buttonStyle(.plain)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 20)
-        .padding(.top, 16)
-        .padding(.bottom, 20)
-        .background {
-            UnevenRoundedRectangle(
-                cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24)
-            )
-            .fill(Color(.systemBackground))
-            .ignoresSafeArea(edges: .top)
-        }
-        .shadow(color: Color.black.opacity(0.06), radius: 10, x: 0, y: 4)
+    }
+
+    private var chatHeaderBackground: some View {
+        LinearGradient(
+            colors: [
+                regularHeaderTopColor,
+                regularHeaderBottomColor
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 
     private var inputSection: some View {
         VStack(spacing: 0) {
-            // Preview do anexo (mostrado acima da barra de texto)
             if hasAttachment {
                 attachmentPreview
-                    .padding(.horizontal)
+                    .padding(.horizontal, isRegularLayout ? 24 : 16)
                     .padding(.top, 8)
+                    .padding(.bottom, 10)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             inputBar
         }
         .animation(.easeInOut(duration: 0.2), value: hasAttachment)
+        .padding(.horizontal, isRegularLayout ? 24 : 16)
+        .padding(.top, 10)
+        .padding(.bottom, 14)
     }
 
     // MARK: - Attachment Preview
@@ -405,20 +495,20 @@ struct ChatView: View {
                         .font(.caption.weight(.medium))
                     Text(isProcessingAttachment ? t("ai.ocrProcessing") : t("ai.attachReady"))
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                 }
 
                 Spacer()
 
                 Button { attachedImage = nil } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                         .font(.title3)
                 }
                 .buttonStyle(.plain)
             }
             .padding(10)
-            .background(Color(.secondarySystemBackground))
+            .background(FinAInceColor.secondarySurface)
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
 
@@ -437,7 +527,7 @@ struct ChatView: View {
                         .lineLimit(1)
                     Text(t("ai.csvReady"))
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                 }
 
                 Spacer()
@@ -447,13 +537,13 @@ struct ChatView: View {
                     attachedCSVContent = nil
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                         .font(.title3)
                 }
                 .buttonStyle(.plain)
             }
             .padding(10)
-            .background(Color(.secondarySystemBackground))
+            .background(FinAInceColor.secondarySurface)
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
@@ -462,11 +552,13 @@ struct ChatView: View {
 
     private var inputBar: some View {
         HStack(spacing: 10) {
-            // Botão de anexo
             Button { showAttachMenu = true } label: {
-                Image(systemName: hasAttachment ? "paperclip.circle.fill" : "plus.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(hasAttachment ? Color.accentColor : Color.secondary)
+                Image(systemName: hasAttachment ? "paperclip.circle.fill" : "plus")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(hasAttachment ? Color.accentColor : FinAInceColor.secondaryText)
+                    .frame(width: 42, height: 42)
+                    .background(FinAInceColor.secondarySurface)
+                    .clipShape(Circle())
                     .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.plain)
@@ -476,25 +568,37 @@ struct ChatView: View {
                 Button(t("common.cancel"), role: .cancel) {}
             }
 
-            // Campo de texto
             TextField(t("ai.placeholder"), text: $inputText, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...4)
-                .padding(10)
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 20))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .frame(minHeight: 48)
+                .finInputFieldSurface(cornerRadius: 22)
                 .focused($isInputFocused)
 
-            // Botão enviar
             Button { sendMessage() } label: {
                 Image(systemName: "paperplane.fill")
-                    .font(.title2)
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 46, height: 46)
+                    .background(canSend ? Color.accentColor : Color.secondary.opacity(0.35))
+                    .clipShape(Circle())
+                    .shadow(color: canSend ? Color.accentColor.opacity(0.22) : .clear, radius: 10, x: 0, y: 6)
             }
             .disabled(!canSend)
+            .buttonStyle(.plain)
         }
-        .padding(.horizontal)
-        .padding(.vertical, 12)
-        .background(.bar)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .background(.ultraThinMaterial)
+        .background(FinAInceColor.primarySurface.opacity(0.88))
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(FinAInceColor.borderStrong, lineWidth: 1)
+        }
+        .shadow(color: FinAInceColor.borderSubtle, radius: 16, x: 0, y: 8)
     }
 
     // MARK: - Subviews
@@ -522,13 +626,13 @@ struct ChatView: View {
                 VStack(spacing: 12) {
                     Text(t("chat.notConfiguredTitle"))
                         .font(.title2.weight(.heavy))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(FinAInceColor.primaryText)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
 
                     Text(t("chat.notConfiguredSubtitle"))
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -558,18 +662,16 @@ struct ChatView: View {
                 Button { showAISettings = true } label: {
                     Text(t("chat.notConfiguredCTA"))
                         .font(.headline)
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: isRegularLayout ? 420 : .infinity)
                         .padding(.vertical, 14)
-                        .background(Color.accentColor)
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .foregroundStyle(FinAInceColor.primaryActionForeground)
                 }
-                .buttonStyle(PressedCTAButtonStyle())
+                .buttonStyle(FinPrimaryButtonStyle())
                 .padding(.horizontal, 28)
 
                 Text(t("chat.notConfiguredMicrocopy"))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FinAInceColor.secondaryText)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 320)
@@ -584,24 +686,24 @@ struct ChatView: View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: icon)
                 .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(Color.secondary)
+                .foregroundStyle(FinAInceColor.secondaryText)
                 .frame(width: 24, height: 24)
                 .padding(.top, 1)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(FinAInceColor.primaryText)
                 Text(body)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FinAInceColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 0)
         }
         .padding(12)
-        .background(Color(.secondarySystemBackground).opacity(0.72), in: RoundedRectangle(cornerRadius: 14))
+        .background(FinAInceColor.secondarySurface.opacity(0.72), in: RoundedRectangle(cornerRadius: 14))
     }
 
     private var suggestionsView: some View {
@@ -610,15 +712,15 @@ struct ChatView: View {
                 Spacer(minLength: 32)
                 Image(systemName: "sparkles")
                     .font(.system(size: 48))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FinAInceColor.secondaryText)
                 VStack(spacing: 6) {
                     Text(t("ai.emptyTitle"))
                         .font(.headline)
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(FinAInceColor.primaryText)
                         .multilineTextAlignment(.center)
                     Text(t("ai.emptyDesc"))
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -643,10 +745,10 @@ struct ChatView: View {
                                 .multilineTextAlignment(.leading)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(12)
-                                .background(Color(.secondarySystemBackground))
+                                .background(FinAInceColor.secondarySurface)
                                 .clipShape(RoundedRectangle(cornerRadius: 10))
                         }
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(FinAInceColor.primaryText)
                     }
                 }
                 .padding(.horizontal)
@@ -692,6 +794,10 @@ struct ChatView: View {
                                 onShare: { deepAnalysisSharePayload = payload }
                             )
                             .id("pending-deep-analysis-prompt")
+                        }
+
+                        if messages.last?.id == message.id, !quickReplyActions.isEmpty {
+                            quickReplyChips
                         }
                     }
 
@@ -751,6 +857,35 @@ struct ChatView: View {
         "created-transaction-\(messageId.uuidString)"
     }
 
+    private var quickReplyChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(quickReplyActions) { action in
+                    Button {
+                        performQuickReply(action)
+                    } label: {
+                        Text(action.title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(FinAInceColor.accentText)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(Color.accentColor.opacity(0.10))
+                            .clipShape(Capsule())
+                            .overlay {
+                                Capsule()
+                                    .stroke(Color.accentColor.opacity(0.18), lineWidth: 1)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.leading, 40)
+            .padding(.trailing, 4)
+        }
+        .id("quick-replies")
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
+    }
+
     // MARK: - Attach Shortcut Chip
 
     private func attachShortcut(icon: String, label: String, action: @escaping () -> Void) -> some View {
@@ -763,14 +898,76 @@ struct ChatView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
-            .background(Color(.secondarySystemBackground))
-            .foregroundStyle(.secondary)
+            .background(FinAInceColor.secondarySurface)
+            .foregroundStyle(FinAInceColor.secondaryText)
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
     }
 
     // MARK: - Send Message
+
+    private func performQuickReply(_ action: QuickReplyAction) {
+        guard !isLoading else { return }
+
+        switch action.kind {
+        case .sendText(let suggestion):
+            inputText = suggestion
+            sendMessage()
+        case .openDeepLink(let url):
+            _ = deepLinkManager.handle(url)
+        }
+    }
+
+    private func assistantMessageNeedsQuickReply(_ content: String) -> Bool {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.contains("?") else { return false }
+
+        if trimmed.hasSuffix("?") {
+            return true
+        }
+
+        let lines = trimmed
+            .split(separator: "\n")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        return lines.last?.hasSuffix("?") == true
+    }
+
+    private func deepLinkQuickReplyActions(from content: String) -> [QuickReplyAction] {
+        let pattern = #"\[([^\]]+)\]\((finaince://[^)]+)\)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+
+        let source = content as NSString
+        let matches = regex.matches(in: content, range: NSRange(location: 0, length: source.length))
+        var actions: [QuickReplyAction] = []
+        var seenDestinations = Set<String>()
+
+        for match in matches {
+            guard match.numberOfRanges == 3 else { continue }
+
+            let title = source.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let destination = source.substring(with: match.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard !title.isEmpty,
+                  !destination.isEmpty,
+                  seenDestinations.insert(destination).inserted,
+                  let url = URL(string: destination) else {
+                continue
+            }
+
+            actions.append(
+                QuickReplyAction(
+                    id: "link-\(destination)",
+                    title: title,
+                    kind: .openDeepLink(url)
+                )
+            )
+        }
+
+        return Array(actions.prefix(3))
+    }
 
     private func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespaces)
@@ -858,10 +1055,7 @@ struct ChatView: View {
             }
 
             if let name = capturedCSVName, let csvText = capturedCSVContent {
-                aiContent += "\n\n[Contexto: o usuário enviou o arquivo CSV \"\(name)\". " +
-                             "Dados (até 50 linhas):\n---\n\(csvText)\n---\n" +
-                             "Analise as colunas disponíveis e ajude o usuário a entender " +
-                             "ou importar as transações.]"
+                aiContent += "\n\n" + t("chat.csvContext", name, csvText)
             }
 
             if aiContent.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -880,6 +1074,7 @@ struct ChatView: View {
                     goals:        Array(goals),
                     accounts:     Array(accounts),
                     categories:   Array(categories),
+                    projects:     Array(costCenters),
                     currencyCode: currencyCode,
                     imageData:    imageDataForAI
                 )
@@ -1131,7 +1326,33 @@ struct ChatView: View {
             "analisar com minha ia",
             "analise com minha ia",
             "para minha ia",
-            "pra minha ia"
+            "pra minha ia",
+            "generate report",
+            "generate a report",
+            "create report",
+            "create a report",
+            "build report",
+            "build a report",
+            "deep analysis",
+            "detailed analysis",
+            "analyze with my ai",
+            "analyse with my ai",
+            "for my ai",
+            "send to my ai",
+            "report for my ai",
+            "generate analysis",
+            "generate an analysis",
+            "generar informe",
+            "generar un informe",
+            "crear informe",
+            "crear un informe",
+            "analisis profundo",
+            "analisis detallado",
+            "analizar con mi ia",
+            "analisis con mi ia",
+            "para mi ia",
+            "informe para mi ia",
+            "generar analisis"
         ]
 
         guard directRequests.contains(where: { normalized.contains($0) }) else { return nil }
@@ -1458,7 +1679,7 @@ struct TransactionDraftBubble: View {
                             .font(.subheadline.weight(.semibold))
                         Text(t("ai.draftReview"))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(FinAInceColor.secondaryText)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
@@ -1477,13 +1698,11 @@ struct TransactionDraftBubble: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
-                    .background(Color(.tertiarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .finInsetSurface(cornerRadius: 8)
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .finSecondarySurface(cornerRadius: 14)
 
                 HStack(spacing: 8) {
                     QuickReplyButton(title: t("common.register"), icon: "checkmark", style: .confirm, action: onConfirm)
@@ -1506,7 +1725,7 @@ struct TransactionDraftBubble: View {
                 .frame(width: 18)
             Text(label)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(FinAInceColor.secondaryText)
                 .frame(width: 58, alignment: .leading)
             Text(value)
                 .font(.subheadline.weight(.medium))
@@ -1536,12 +1755,11 @@ struct TransactionCreatedBubble: View {
                         .font(.subheadline.weight(.semibold))
                     Text(t("ai.expenseRegisteredDetail", transaction.amount.asCurrency(currencyCode), transaction.placeName ?? transaction.category?.displayName ?? t("transaction.noPlace")))
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .finSecondarySurface(cornerRadius: 14)
 
                 QuickReplyButton(
                     title: t("ai.viewTransaction"),
@@ -1590,12 +1808,11 @@ private struct DeepAnalysisOfferBubble: View {
                         .font(.subheadline.weight(.semibold))
                     Text(payload.subtitle)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .finSecondarySurface(cornerRadius: 14)
 
                 HStack(spacing: 8) {
                     QuickReplyButton(
@@ -1648,14 +1865,14 @@ private struct DeepAnalysisPromptBubble: View {
                                 .font(.subheadline.weight(.semibold))
                             Text(payload.fileURL.lastPathComponent)
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(FinAInceColor.secondaryText)
                                 .lineLimit(1)
                         }
                     }
 
                     Text(payload.subtitle)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1845,8 +2062,8 @@ struct ChatBubbleView: View {
                         .font(.subheadline)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
-                        .background(isUser ? Color.accentColor : Color(.secondarySystemBackground))
-                        .foregroundStyle(isUser ? Color.white : Color.primary)
+                        .background(isUser ? Color.accentColor : FinAInceColor.secondarySurface)
+                        .foregroundStyle(isUser ? FinAInceColor.inverseText : FinAInceColor.primaryText)
                         .clipShape(RoundedRectangle(cornerRadius: 18))
                 }
             }
@@ -1891,7 +2108,7 @@ struct TypingIndicatorView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
-            .background(Color(.secondarySystemBackground))
+            .background(FinAInceColor.secondarySurface)
             .clipShape(RoundedRectangle(cornerRadius: 18))
 
             Spacer(minLength: 60)

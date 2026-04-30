@@ -151,6 +151,8 @@ struct OnboardingView: View {
 
     var body: some View {
         ZStack {
+            OnboardingAmbientBackground()
+
             switch step {
             case 0:
                 OnboardingNameStep(
@@ -373,12 +375,145 @@ struct OnboardingView: View {
 
 // MARK: - Shared: Progress Bar + Hero Shell
 
+private struct OnboardingAmbientBackground: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
+    }
+
+    var body: some View {
+        Group {
+            if isRegularLayout {
+                ZStack {
+                    LinearGradient(
+                        colors: [
+                            Color.accentColor,
+                            Color.accentColor.opacity(0.85),
+                            Color.accentColor.opacity(0.70)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .ignoresSafeArea()
+
+                    Circle()
+                        .fill(.white.opacity(0.12))
+                        .frame(width: 320, height: 320)
+                        .blur(radius: 80)
+                        .offset(x: -120, y: -220)
+                        .allowsHitTesting(false)
+
+                    Circle()
+                        .fill(.white.opacity(0.08))
+                        .frame(width: 280, height: 280)
+                        .blur(radius: 70)
+                        .offset(x: 140, y: 260)
+                        .allowsHitTesting(false)
+                }
+            } else {
+                Color.white
+                    .ignoresSafeArea()
+            }
+        }
+    }
+}
+
+private let onboardingRegularMaxWidth: CGFloat = 1100
+private let onboardingSuccessMaxWidth: CGFloat = 900
+private let onboardingRegularSurfaceFill = Color.white.opacity(0.97)
+private let onboardingCompactContentFill = Color.white
+private let onboardingCompactCardFill = Color(.systemGray6)
+private let onboardingSurfaceStroke = Color.black.opacity(0.08)
+
+private struct OnboardingContentShellModifier: ViewModifier {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    let cornerRadius: CGFloat
+
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
+    }
+
+    private var fillColor: Color {
+        isRegularLayout ? onboardingRegularSurfaceFill : onboardingCompactContentFill
+    }
+
+    func body(content: Content) -> some View {
+        if isRegularLayout {
+            content
+                .background(fillColor, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(onboardingSurfaceStroke, lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.16), radius: 24, x: 0, y: 14)
+        } else {
+            content
+                .background(fillColor)
+        }
+    }
+}
+
+private struct OnboardingSurfaceCardModifier: ViewModifier {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    let cornerRadius: CGFloat
+
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
+    }
+
+    private var fillColor: Color {
+        isRegularLayout ? onboardingRegularSurfaceFill : onboardingCompactCardFill
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .background(fillColor)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(onboardingSurfaceStroke, lineWidth: 1)
+            }
+    }
+}
+
+private extension View {
+    func onboardingRegularWidth(_ enabled: Bool, alignment: Alignment = .leading) -> some View {
+        self
+            .frame(maxWidth: enabled ? onboardingRegularMaxWidth : .infinity, alignment: alignment)
+            .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    func onboardingContentShell(cornerRadius: CGFloat = 28) -> some View {
+        self
+            .modifier(OnboardingContentShellModifier(cornerRadius: cornerRadius))
+    }
+
+    func onboardingSurfaceCard(cornerRadius: CGFloat = 14) -> some View {
+        self
+            .modifier(OnboardingSurfaceCardModifier(cornerRadius: cornerRadius))
+    }
+
+    func onboardingTitleFont() -> some View {
+        self.font(.system(size: 30, weight: .bold, design: .rounded))
+    }
+
+    func onboardingHeroTitleFont() -> some View {
+        self.font(.system(size: 28, weight: .bold, design: .rounded))
+    }
+}
+
 struct OnboardingHero: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let title: String
     let subtitle: String
     let progress: Double
     let icon: String
     var privacyNote: String? = nil
+
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -394,7 +529,7 @@ struct OnboardingHero: View {
             .padding(.bottom, 2)
 
             Text(title)
-                .font(.title2.bold())
+                .onboardingHeroTitleFont()
                 .foregroundStyle(.white)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -423,17 +558,27 @@ struct OnboardingHero: View {
         .padding(.bottom, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            LinearGradient(
-                colors: [Color.accentColor, Color.accentColor.opacity(0.72)],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea(edges: .top)
+            if !isRegularLayout {
+                LinearGradient(
+                    colors: [
+                        Color.accentColor,
+                        Color.accentColor.opacity(0.86),
+                        Color.accentColor.opacity(0.72)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .clipShape(
+                    RoundedRectangle(cornerRadius: 0, style: .continuous)
+                )
+                .ignoresSafeArea(edges: .top)
+            }
         }
         // Progress bar overlaid at top of hero (below safe area, above content)
         .overlay(alignment: .top) {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    Color.white.opacity(0.22)
+                    Color.white.opacity(0.18)
                         .frame(maxWidth: .infinity)
                         .frame(height: 3)
                     Color.white
@@ -443,10 +588,20 @@ struct OnboardingHero: View {
             }
             .frame(height: 3)
         }
+        .overlay(alignment: .bottom) {
+            if !isRegularLayout {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(Color.white)
+                    .frame(height: 24)
+                    .offset(y: 12)
+            }
+        }
+        .onboardingRegularWidth(isRegularLayout)
     }
 }
 
 private struct OnboardingNavButtons: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let backLabel: String
     let nextLabel: String
     let canAdvance: Bool
@@ -468,6 +623,10 @@ private struct OnboardingNavButtons: View {
         self.onNext     = onNext
     }
 
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             Button(action: onBack) {
@@ -476,8 +635,7 @@ private struct OnboardingNavButtons: View {
                     .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .onboardingSurfaceCard(cornerRadius: 14)
             }
             .buttonStyle(.plain)
             .disabled(isLoading)
@@ -493,13 +651,27 @@ private struct OnboardingNavButtons: View {
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 16)
-                .background(canAdvance ? Color.accentColor : Color(.systemGray4))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .background(
+                    canAdvance
+                        ? AnyShapeStyle(LinearGradient(
+                            colors: [Color.accentColor, Color.accentColor.opacity(0.82)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ))
+                        : AnyShapeStyle(Color.white.opacity(0.22))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(.white.opacity(canAdvance ? 0 : 0.18), lineWidth: 1)
+                }
             }
             .buttonStyle(.plain)
-            .disabled(!canAdvance || isLoading)
+                .disabled(!canAdvance || isLoading)
         }
         .padding(20)
+        .background(.black.opacity(0.08), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .onboardingRegularWidth(isRegularLayout)
     }
 }
 
@@ -522,6 +694,7 @@ struct OnboardingCurrency: Identifiable, Hashable {
 // MARK: - Step 0: Nome + Idioma + Moeda
 
 private struct OnboardingNameStep: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Binding var userName: String
     let progress: Double
     let onNext: () -> Void
@@ -533,36 +706,49 @@ private struct OnboardingNameStep: View {
         !userName.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Hero (full-bleed welcome)
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 14) {
                 Text("👋")
                     .font(.system(size: 48))
                 Text(t("ob.step0.heroTitle"))
-                    .font(.title.bold())
+                    .onboardingTitleFont()
                     .foregroundStyle(.white)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(t("ob.step0.heroSubtitle"))
                     .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.92))
+                    .foregroundStyle(.white.opacity(0.86))
                     .fixedSize(horizontal: false, vertical: true)
                     .lineSpacing(2)
+                    .frame(maxWidth: 760, alignment: .leading)
             }
-            .padding(24)
-            .padding(.bottom, 18)
+            .padding(.horizontal, 24)
+            .padding(.top, 28)
+            .padding(.bottom, 24)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
-                LinearGradient(
-                    colors: [Color.accentColor, Color.accentColor.opacity(0.72)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea(edges: .top)
+                if !isRegularLayout {
+                    LinearGradient(
+                        colors: [
+                            Color.accentColor,
+                            Color.accentColor.opacity(0.86),
+                            Color.accentColor.opacity(0.72)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .ignoresSafeArea(edges: .top)
+                }
             }
             .overlay(alignment: .top) {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Color.white.opacity(0.22).frame(maxWidth: .infinity).frame(height: 3)
+                        Color.white.opacity(0.18).frame(maxWidth: .infinity).frame(height: 3)
                         Color.white
                             .frame(width: geo.size.width * progress, height: 3)
                             .animation(.easeInOut(duration: 0.4), value: progress)
@@ -570,10 +756,19 @@ private struct OnboardingNameStep: View {
                 }
                 .frame(height: 3)
             }
+            .overlay(alignment: .bottom) {
+                if !isRegularLayout {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(Color.white)
+                        .frame(height: 24)
+                        .offset(y: 12)
+                }
+            }
+            .onboardingRegularWidth(isRegularLayout)
 
             // Content
             ScrollView {
-                VStack(spacing: 28) {
+                VStack(spacing: 30) {
                     // Language + Currency selectors
                     HStack(spacing: 12) {
                         // Language
@@ -621,7 +816,8 @@ private struct OnboardingNameStep: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         Text(t("ob.step0.nameQuestion"))
-                            .font(.title2.bold())
+                            .onboardingHeroTitleFont()
+                            .foregroundStyle(.primary)
                         Text(t("ob.step0.nameDesc"))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -632,100 +828,147 @@ private struct OnboardingNameStep: View {
                     TextField(t("ob.step0.namePlaceholder"), text: $userName)
                         .font(.title3)
                         .padding(16)
-                        .background(Color(.secondarySystemBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .onboardingSurfaceCard(cornerRadius: 14)
                         .submitLabel(.next)
                         .onSubmit { if canAdvance { onNext() } }
 
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Divider()
+                            .overlay(Color.black.opacity(0.06))
 
                         if entitlements.purchaseState == .purchasedPendingRestart {
-                            Label("Compra restaurada. Feche e abra o app para ativar o Cloud.", systemImage: "checkmark.icloud.fill")
+                            Label(t("onboarding.cloudRestoredRestart"), systemImage: "checkmark.icloud.fill")
                                 .font(.footnote.weight(.medium))
                                 .foregroundStyle(Color.accentColor)
                         } else if entitlements.purchaseState == .active {
-                            Label("FinAInce Cloud já está ativo neste dispositivo.", systemImage: "icloud.fill")
+                            Label(t("onboarding.cloudAlreadyActive"), systemImage: "icloud.fill")
                                 .font(.footnote.weight(.medium))
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text("Ja comprou o FinAInce Cloud?")
-                                .font(.footnote.weight(.medium))
-                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text(t("onboarding.cloudOwnershipQuestion"))
+                                    .font(.footnote.weight(.medium))
+                                    .foregroundStyle(.secondary)
 
-                            VStack(spacing: 10) {
-                                Button {
-                                    Task { await entitlements.restorePurchases() }
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        if entitlements.isRestoring {
-                                            ProgressView()
-                                                .controlSize(.small)
-                                        } else {
-                                            Image(systemName: "arrow.clockwise.icloud")
+                                HStack(spacing: 10) {
+                                    Button {
+                                        Task { await entitlements.restorePurchases() }
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            if entitlements.isRestoring {
+                                                ProgressView()
+                                                    .controlSize(.small)
+                                                    .tint(Color.accentColor)
+                                            }
+                                            Text(t("cloud.restorePurchase"))
+                                                .font(.subheadline.weight(.semibold))
                                         }
-                                        Text(t("cloud.restorePurchase"))
-                                            .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(Color.accentColor)
                                     }
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 12)
-                                    .background(Color(.tertiarySystemBackground))
-                                    .foregroundStyle(.primary)
-                                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(entitlements.isRestoring || entitlements.isPurchasing)
+                                    .buttonStyle(.plain)
+                                    .disabled(entitlements.isRestoring || entitlements.isPurchasing)
 
-                                #if DEBUG
-                                Button {
-                                    Task { await entitlements.purchase() }
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        if entitlements.isPurchasing {
-                                            ProgressView()
-                                                .controlSize(.small)
-                                        } else {
-                                            Image(systemName: "icloud.badge.plus")
+                                    Text("|")
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(.tertiary)
+
+                                    Button {
+                                        Task { await entitlements.purchase() }
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            if entitlements.isPurchasing {
+                                                ProgressView()
+                                                    .controlSize(.small)
+                                                    .tint(Color.accentColor)
+                                            }
+                                            Text(t("onboarding.cloudBuyNew"))
+                                                .font(.subheadline.weight(.semibold))
                                         }
-                                        Text("Comprar novamente (DEBUG)")
-                                            .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(Color.accentColor)
                                     }
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 12)
-                                    .background(Color.accentColor.opacity(0.12))
-                                    .foregroundStyle(Color.accentColor)
-                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                    .buttonStyle(.plain)
+                                    .disabled(entitlements.isRestoring || entitlements.isPurchasing || entitlements.product == nil)
+
+                                    Spacer(minLength: 0)
                                 }
-                                .buttonStyle(.plain)
-                                .disabled(entitlements.isRestoring || entitlements.isPurchasing || entitlements.product == nil)
-                                #endif
+                                .padding(.vertical, 4)
                             }
                         }
                     }
+                    .padding(.top, 2)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .background(Color.accentColor.opacity(0.05))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                     Spacer(minLength: 8)
+
+                    if !isRegularLayout {
+                        Button(action: onNext) {
+                            Text(t("ob.nav.letsStart"))
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
+                                .background(
+                                    canAdvance && entitlements.purchaseState != .purchasedPendingRestart
+                                        ? AnyShapeStyle(LinearGradient(
+                                            colors: [Color.accentColor, Color.accentColor.opacity(0.82)],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        ))
+                                        : AnyShapeStyle(Color.white.opacity(0.22))
+                                )
+                                .foregroundStyle(.white)
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .stroke(.white.opacity(canAdvance && entitlements.purchaseState != .purchasedPendingRestart ? 0 : 0.18), lineWidth: 1)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canAdvance || entitlements.purchaseState == .purchasedPendingRestart)
+                        .shadow(color: canAdvance && entitlements.purchaseState != .purchasedPendingRestart ? Color.black.opacity(0.16) : .clear, radius: 14, x: 0, y: 8)
+                    }
                 }
-                .padding(24)
+                .padding(28)
+                .onboardingContentShell()
+                .onboardingRegularWidth(isRegularLayout)
             }
 
-            Button(action: onNext) {
-                Text(t("ob.nav.letsStart"))
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(canAdvance && entitlements.purchaseState != .purchasedPendingRestart ? Color.accentColor : Color(.systemGray4))
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            if isRegularLayout {
+                Button(action: onNext) {
+                    Text(t("ob.nav.letsStart"))
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(
+                            canAdvance && entitlements.purchaseState != .purchasedPendingRestart
+                                ? AnyShapeStyle(LinearGradient(
+                                    colors: [Color.accentColor, Color.accentColor.opacity(0.82)],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                ))
+                                : AnyShapeStyle(Color.white.opacity(0.22))
+                        )
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(.white.opacity(canAdvance && entitlements.purchaseState != .purchasedPendingRestart ? 0 : 0.18), lineWidth: 1)
+                        }
+                }
+                .buttonStyle(.plain)
+                .disabled(!canAdvance || entitlements.purchaseState == .purchasedPendingRestart)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
+                .onboardingRegularWidth(isRegularLayout)
+                .shadow(color: canAdvance && entitlements.purchaseState != .purchasedPendingRestart ? Color.black.opacity(0.16) : .clear, radius: 14, x: 0, y: 8)
             }
-            .buttonStyle(.plain)
-            .disabled(!canAdvance || entitlements.purchaseState == .purchasedPendingRestart)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
         }
         .overlay {
             if entitlements.purchaseState == .purchasedPendingRestart {
                 ZStack {
-                    Color(.systemBackground)
+                    Color.white
                         .opacity(0.98)
                         .ignoresSafeArea()
 
@@ -793,19 +1036,23 @@ private struct OnboardingNameStep: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .onboardingSurfaceCard(cornerRadius: 12)
     }
 }
 
 // MARK: - Step 1: Estrutura Familiar
 
 private struct OnboardingFamilyStep: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Binding var adults: Int
     @Binding var children: Int
     let progress: Double
     let onBack: () -> Void
     let onNext: () -> Void
+
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -822,11 +1069,19 @@ private struct OnboardingFamilyStep: View {
                         adults: $adults,
                         children: $children
                     )
+
+                    if !isRegularLayout {
+                        OnboardingNavButtons(onBack: onBack, onNext: onNext)
+                    }
                 }
                 .padding(20)
+                .onboardingContentShell()
+                .onboardingRegularWidth(isRegularLayout)
             }
 
-            OnboardingNavButtons(onBack: onBack, onNext: onNext)
+            if isRegularLayout {
+                OnboardingNavButtons(onBack: onBack, onNext: onNext)
+            }
         }
     }
 }
@@ -834,10 +1089,15 @@ private struct OnboardingFamilyStep: View {
 // MARK: - Step 2: Despesas Fixas
 
 private struct OnboardingExpensesStep: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Binding var selected: Set<String>
     let progress: Double
     let onBack: () -> Void
     let onNext: () -> Void
+
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -857,8 +1117,7 @@ private struct OnboardingExpensesStep: View {
                         }
                     }
                 }
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .onboardingSurfaceCard(cornerRadius: 16)
                 .padding(.horizontal, 20)
                 .padding(.top, 20)
                 .padding(.bottom, 8)
@@ -871,9 +1130,19 @@ private struct OnboardingExpensesStep: View {
                         .foregroundStyle(.secondary)
                         .padding(.bottom, 12)
                 }
-            }
 
-            OnboardingNavButtons(onBack: onBack, onNext: onNext)
+                if !isRegularLayout {
+                    OnboardingNavButtons(onBack: onBack, onNext: onNext)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 20)
+            .onboardingContentShell()
+            .onboardingRegularWidth(isRegularLayout)
+
+            if isRegularLayout {
+                OnboardingNavButtons(onBack: onBack, onNext: onNext)
+            }
         }
     }
 
@@ -914,6 +1183,7 @@ private struct OnboardingExpensesStep: View {
 // MARK: - Step 3: Orçamento
 
 private struct OnboardingBudgetStep: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Binding var budget: Double
     let adultsCount: Int
     let childrenCount: Int
@@ -921,6 +1191,10 @@ private struct OnboardingBudgetStep: View {
     let onBack: () -> Void
     let onNext: () -> Void
     @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
+
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -978,14 +1252,22 @@ private struct OnboardingBudgetStep: View {
                     }
                 }
                 .padding(14)
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .onboardingSurfaceCard(cornerRadius: 12)
                 .padding(.horizontal, 20)
 
                 Spacer()
-            }
 
-            OnboardingNavButtons(onBack: onBack, onNext: onNext)
+                if !isRegularLayout {
+                    OnboardingNavButtons(onBack: onBack, onNext: onNext)
+                }
+            }
+            .padding(20)
+            .onboardingContentShell()
+            .onboardingRegularWidth(isRegularLayout)
+
+            if isRegularLayout {
+                OnboardingNavButtons(onBack: onBack, onNext: onNext)
+            }
         }
     }
 
@@ -1004,6 +1286,7 @@ private struct OnboardingBudgetStep: View {
 // MARK: - Step 4: Metas de Gastos
 
 private struct OnboardingGoalsStep: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Binding var goals: [BudgetGoalItem]
     let budget: Double
     let adults: Int
@@ -1012,6 +1295,10 @@ private struct OnboardingGoalsStep: View {
     let onBack: () -> Void
     let onNext: () -> Void
     @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
+
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1050,8 +1337,7 @@ private struct OnboardingGoalsStep: View {
                             }
                         }
                     }
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .onboardingSurfaceCard(cornerRadius: 16)
 
                     Text(t("ob.step4.footer"))
                         .font(.caption)
@@ -1062,9 +1348,18 @@ private struct OnboardingGoalsStep: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 20)
                 .padding(.bottom, 8)
+                .onboardingContentShell()
+                .onboardingRegularWidth(isRegularLayout)
+
+                if !isRegularLayout {
+                    OnboardingNavButtons(onBack: onBack, onNext: onNext)
+                        .padding(.top, 20)
+                }
             }
 
-            OnboardingNavButtons(onBack: onBack, onNext: onNext)
+            if isRegularLayout {
+                OnboardingNavButtons(onBack: onBack, onNext: onNext)
+            }
         }
     }
 
@@ -1126,12 +1421,17 @@ private struct OnboardingGoalsStep: View {
 // MARK: - Step 5: Contas
 
 private struct OnboardingAccountStep: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Binding var hasCreditCard: Bool
     @Binding var cardClosingDay: Int
     @Binding var cardName: String
     let progress: Double
     let onBack: () -> Void
     let onNext: () -> Void
+
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1163,8 +1463,7 @@ private struct OnboardingAccountStep: View {
                             .foregroundStyle(.green)
                     }
                     .padding(16)
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .onboardingSurfaceCard(cornerRadius: 14)
 
                     // Cartão de crédito
                     VStack(spacing: 0) {
@@ -1221,18 +1520,30 @@ private struct OnboardingAccountStep: View {
                                 .padding(.horizontal, 16).padding(.bottom, 12)
                         }
                     }
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .onboardingSurfaceCard(cornerRadius: 14)
                     .animation(.easeInOut(duration: 0.25), value: hasCreditCard)
                 }
                 .padding(20)
+                .onboardingContentShell()
+                .onboardingRegularWidth(isRegularLayout)
+
+                if !isRegularLayout {
+                    OnboardingNavButtons(
+                        nextLabel: t("ob.nav.continue"),
+                        onBack: onBack,
+                        onNext: onNext
+                    )
+                        .padding(.top, 20)
+                }
             }
 
-            OnboardingNavButtons(
-                nextLabel: t("ob.nav.continue"),
-                onBack: onBack,
-                onNext: onNext
-            )
+            if isRegularLayout {
+                OnboardingNavButtons(
+                    nextLabel: t("ob.nav.continue"),
+                    onBack: onBack,
+                    onNext: onNext
+                )
+            }
         }
     }
 }
@@ -1240,6 +1551,7 @@ private struct OnboardingAccountStep: View {
 // MARK: - Step 6: Configurar IA
 
 private struct OnboardingAIStep: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let progress: Double
     let onBack: () -> Void
     let onNext: (Bool) -> Void   // Bool = whether AI was configured
@@ -1251,6 +1563,10 @@ private struct OnboardingAIStep: View {
 
     private var isConfigured: Bool {
         localConfigured != nil || !aiSettingsList.isEmpty
+    }
+
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
     }
 
     var body: some View {
@@ -1305,22 +1621,37 @@ private struct OnboardingAIStep: View {
                                 .foregroundStyle(.tertiary)
                         }
                         .padding(16)
-                        .background(Color(.secondarySystemBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .onboardingSurfaceCard(cornerRadius: 14)
                     }
                     .buttonStyle(.plain)
                 }
                 .padding(20)
+                .onboardingContentShell()
+                .onboardingRegularWidth(isRegularLayout)
+
+                if !isRegularLayout {
+                    OnboardingNavButtons(
+                        nextLabel: isConfigured
+                            ? t("ob.step6ai.continueConfigured")
+                            : t("ob.nav.next"),
+                        canAdvance: true,
+                        onBack: onBack,
+                        onNext: { onNext(isConfigured) }
+                    )
+                        .padding(.top, 20)
+                }
             }
 
-            OnboardingNavButtons(
-                nextLabel: isConfigured
-                    ? t("ob.step6ai.continueConfigured")
-                    : t("ob.nav.next"),
-                canAdvance: true,
-                onBack: onBack,
-                onNext: { onNext(isConfigured) }
-            )
+            if isRegularLayout {
+                OnboardingNavButtons(
+                    nextLabel: isConfigured
+                        ? t("ob.step6ai.continueConfigured")
+                        : t("ob.nav.next"),
+                    canAdvance: true,
+                    onBack: onBack,
+                    onNext: { onNext(isConfigured) }
+                )
+            }
         }
         .sheet(isPresented: $showProviderSheet) {
             NavigationStack {
@@ -1390,7 +1721,7 @@ private struct OnboardingAIStep: View {
             .background(
                 isSelected
                     ? Color.accentColor.opacity(0.08)
-                    : Color(.secondarySystemBackground)
+                    : (isRegularLayout ? onboardingRegularSurfaceFill : onboardingCompactCardFill)
             )
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay(
@@ -1425,36 +1756,31 @@ private struct OnboardingAIStep: View {
 // MARK: - Step 7: Sucesso + Descoberta
 
 private struct OnboardingSuccessStep: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let userName: String
     let aiConfigured: Bool
     let onFinish: () -> Void
 
+    private var isRegularLayout: Bool {
+        horizontalSizeClass == .regular
+    }
+
     var body: some View {
         ZStack {
-            // Full-screen gradient background — splash style
-            LinearGradient(
-                colors: [
-                    Color.accentColor,
-                    Color.accentColor.opacity(0.85),
-                    Color.accentColor.opacity(0.70)
-                ],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-
-            // Soft ambient glows for depth (subtle, non-interactive)
-            Circle()
-                .fill(.white.opacity(0.12))
-                .frame(width: 320, height: 320)
-                .blur(radius: 80)
-                .offset(x: -120, y: -220)
-                .allowsHitTesting(false)
-            Circle()
-                .fill(.white.opacity(0.08))
-                .frame(width: 280, height: 280)
-                .blur(radius: 70)
-                .offset(x: 140, y: 260)
-                .allowsHitTesting(false)
+            if isRegularLayout {
+                OnboardingAmbientBackground()
+            } else {
+                LinearGradient(
+                    colors: [
+                        Color.accentColor,
+                        Color.accentColor.opacity(0.86),
+                        Color.accentColor.opacity(0.72)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .ignoresSafeArea()
+            }
 
             VStack(spacing: 0) {
                 Spacer(minLength: 20)
@@ -1474,7 +1800,7 @@ private struct OnboardingSuccessStep: View {
                     }
 
                     Text(t("ob.step6.title", firstName.isEmpty ? "" : ", \(firstName)"))
-                        .font(.largeTitle.bold())
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
 
@@ -1542,6 +1868,8 @@ private struct OnboardingSuccessStep: View {
                 .padding(.horizontal, 24)
                 .padding(.bottom, 12)
             }
+            .frame(maxWidth: isRegularLayout ? onboardingSuccessMaxWidth : .infinity)
+            .frame(maxWidth: .infinity)
         }
     }
 

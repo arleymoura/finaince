@@ -9,6 +9,7 @@ import StoreKit
 
 struct FinAInceCloudView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var entitlements = EntitlementManager.shared
 
     /// DEBUG only — força exibição do fluxo de compra independente do estado de entitlement
@@ -31,6 +32,7 @@ struct FinAInceCloudView: View {
                             heroSection
                             contentSection
                         }
+                        .frame(maxWidth: .infinity)
                     }
                     .ignoresSafeArea(edges: .top)
                 }
@@ -77,9 +79,11 @@ struct FinAInceCloudView: View {
                 dismiss()
             }
             .padding(32)
+            .frame(maxWidth: contentMaxWidth)
 
             Spacer()
         }
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Hero
@@ -116,8 +120,10 @@ struct FinAInceCloudView: View {
                         .padding(.horizontal, 32)
                 }
             }
+            .frame(maxWidth: contentMaxWidth)
             .padding(.top, 72)
             .padding(.bottom, 48)
+            .padding(.horizontal, 24)
         }
     }
 
@@ -141,7 +147,12 @@ struct FinAInceCloudView: View {
                     .padding(.bottom, 8)
             }
         }
+        .frame(maxWidth: contentMaxWidth)
         .padding(20)
+    }
+
+    private var contentMaxWidth: CGFloat {
+        horizontalSizeClass == .regular ? 920 : .infinity
     }
 
     // MARK: - Features
@@ -188,9 +199,12 @@ struct FinAInceCloudView: View {
             Group {
                 if let displayPrice = entitlements.product?.displayPrice {
                     Text(displayPrice)
+                } else if entitlements.isLoadingProduct {
+                    ProgressView()
+                        .controlSize(.regular)
                 } else {
-                    Text("–")
-                        .redacted(reason: .placeholder)
+                    Text(t("cloud.productUnavailableShort"))
+                        .foregroundStyle(.secondary)
                 }
             }
             .font(.system(size: 42, weight: .bold, design: .rounded))
@@ -199,6 +213,24 @@ struct FinAInceCloudView: View {
             Text(t("cloud.priceLabel"))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+
+            if let productLoadError = entitlements.productLoadError {
+                Text(productLoadError)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 4)
+
+                Button(t("cloud.retryLoad")) {
+                    Task { await entitlements.loadProduct() }
+                }
+                .font(.caption.weight(.semibold))
+            } else if entitlements.isLoadingProduct {
+                Text(t("cloud.loadingPrice"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 24)
@@ -444,16 +476,16 @@ struct FinAInceCloudBanner: View {
             HStack(spacing: 10) {
                 cloudFeaturePill(
                     icon: state == .active ? "checkmark.seal.fill" : "arrow.triangle.2.circlepath.icloud.fill",
-                    text: state == .active ? "Sincronizacao ativa" : "Backup e sync"
+                    text: state == .active ? t("cloud.bannerFeatureSyncActive") : t("cloud.bannerFeatureBackupSync")
                 )
                 cloudFeaturePill(
                     icon: "iphone.and.arrow.right.outward",
-                    text: "Multi-dispositivo"
+                    text: t("cloud.bannerFeatureMultidevice")
                 )
                 if state == .active {
                     cloudFeaturePill(
                         icon: "lock.fill",
-                        text: "iCloud privado"
+                        text: t("cloud.bannerFeaturePrivateICloud")
                     )
                 }
             }

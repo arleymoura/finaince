@@ -94,7 +94,9 @@ struct TransactionEditView: View {
                 // Valor
                 Section(t("transaction.amount")) {
                     HStack(spacing: 8) {
-                        Text(CurrencyOption(rawValue: currencyCode)?.symbol ?? "R$")
+                        Text((CurrencyOption(rawValue: currencyCode)
+                              ?? CurrencyOption(rawValue: CurrencyOption.defaultCode)
+                              ?? .usd).symbol)
                             .font(.title3.bold())
                             .foregroundStyle(.secondary)
                         TextField("0,00", text: $amountText)

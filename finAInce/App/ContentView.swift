@@ -26,6 +26,7 @@ struct ContentView: View {
     /// Keeps a reference so SwiftUI re-renders when language changes
     private var lm: LanguageManager { LanguageManager.shared }
     private let cloudSyncWaitSeconds = 180
+    private let onboardingCloudSyncWaitSeconds = 12
     private let stableCloudDataChecks = 2
 
     private var preferredScheme: ColorScheme? {
@@ -170,17 +171,19 @@ struct ContentView: View {
 
             DebugLaunchLog.log("☁️ [Launch] splashDismiss start cloudEnabled=\(EntitlementManager.shared.isCloudEnabled) hasCompletedOnboarding=\(hasCompletedOnboarding) awaitingInitialSync=\(EntitlementManager.shared.isAwaitingInitialSync) shouldForceInitialSyncRecovery=\(shouldForceInitialSyncRecovery) isReturningCloudUserAwaitingData=\(isReturningCloudUserAwaitingData) shouldWaitForCloudSync=\(shouldWaitForCloudSync) hasExistingUserData=\(hasExistingUserData())")
 
+            let maxCloudWaitSeconds = hasCompletedOnboarding ? cloudSyncWaitSeconds : onboardingCloudSyncWaitSeconds
+
             if shouldWaitForCloudSync {
                 splashMode = .syncing
                 var consecutiveSuccessfulChecks = 0
-                var iteration = 0
+                var completedRecovery = false
 
-                while true {
-                    iteration += 1
+                for iteration in 1...maxCloudWaitSeconds {
                     lm.syncFromCloud()
 
                     let ready = hasCloudSyncReadyData()
                     let existing = hasExistingUserData()
+                    let syncSatisfied = ready || existing
                     let transactionCount = (try? modelContext.fetchCount(FetchDescriptor<Transaction>())) ?? 0
                     let goalCount = (try? modelContext.fetchCount(FetchDescriptor<Goal>())) ?? 0
                     let conversationCount = (try? modelContext.fetchCount(FetchDescriptor<ChatConversation>())) ?? 0
@@ -188,9 +191,9 @@ struct ContentView: View {
                     let accountCount = (try? modelContext.fetchCount(FetchDescriptor<Account>())) ?? 0
                     let familyCount = (try? modelContext.fetchCount(FetchDescriptor<Family>())) ?? 0
 
-                    DebugLaunchLog.log("☁️ [Launch] recoverySync tick=\(iteration) ready=\(ready) existing=\(existing) transactions=\(transactionCount) goals=\(goalCount) chats=\(conversationCount) analyses=\(analysisCount) accounts=\(accountCount) families=\(familyCount) language=\(lm.language.rawValue)")
+                    DebugLaunchLog.log("☁️ [Launch] recoverySync tick=\(iteration) ready=\(ready) existing=\(existing) syncSatisfied=\(syncSatisfied) transactions=\(transactionCount) goals=\(goalCount) chats=\(conversationCount) analyses=\(analysisCount) accounts=\(accountCount) families=\(familyCount) language=\(lm.language.rawValue)")
 
-                    if ready {
+                    if syncSatisfied {
                         consecutiveSuccessfulChecks += 1
                     } else {
                         consecutiveSuccessfulChecks = 0
@@ -200,12 +203,19 @@ struct ContentView: View {
                         shouldSkipOnboarding = true
                         EntitlementManager.shared.markInitialSyncCompleted()
                         DebugLaunchLog.log("☁️ [Launch] recoverySync complete after \(iteration) ticks")
+                        completedRecovery = true
                         break
                     }
 
                     try? await Task.sleep(for: .seconds(1))
                 }
-            } else if !shouldSkipOnboarding && EntitlementManager.shared.isCloudEnabled {
+
+                if !completedRecovery {
+                    shouldSkipOnboarding = hasCompletedOnboarding || hasExistingUserData()
+                    EntitlementManager.shared.markInitialSyncCompleted()
+                    DebugLaunchLog.log("☁️ [Launch] recoverySync timed out after \(maxCloudWaitSeconds) ticks; continuing to \(shouldSkipOnboarding ? "main" : "onboarding")")
+                }
+            } else if !shouldSkipOnboarding && EntitlementManager.shared.isCloudEnabled && hasCompletedOnboarding {
                 splashMode = .syncing
                 for iteration in 0..<cloudSyncWaitSeconds {
                     lm.syncFromCloud()
@@ -279,33 +289,17 @@ struct ContentView: View {
 private struct iPhoneRootView: View {
     @State private var showNewTransaction = false
     @State private var showImportSheet = false
-    @State private var selectedTab        = 0
-    @State private var previousTab        = 0
-    @State private var isKeyboardVisible  = false
+    @State private var selectedTab       = 0
+    @State private var isKeyboardVisible = false
     @State private var deepLinkManager = DeepLinkManager.shared
     @State private var chatNavigationManager = ChatNavigationManager.shared
 
     /// @State so SwiftUI's @Observable tracking works correctly on the singleton
     @State private var importManager = SharedImportManager.shared
 
-    private var tabSelection: Binding<Int> {
-        Binding(
-            get: { selectedTab },
-            set: { newValue in
-                if newValue == 2 {
-                    selectedTab = previousTab
-                    showNewTransaction = true
-                } else {
-                    selectedTab = newValue
-                    previousTab = newValue
-                }
-            }
-        )
-    }
-
     var body: some View {
-        ZStack(alignment: .bottom) {
-            TabView(selection: tabSelection) {
+        ZStack(alignment: .bottomTrailing) {
+            TabView(selection: $selectedTab) {
                 DashboardView()
                     .tabItem { Label(t("tab.dashboard"), systemImage: "chart.pie.fill") }
                     .tag(0)
@@ -314,12 +308,12 @@ private struct iPhoneRootView: View {
                     .tabItem { Label(t("tab.transactions"), systemImage: "list.bullet.rectangle") }
                     .tag(1)
 
-                Color.clear
-                    .tabItem { Label("", systemImage: "") }
-                    .tag(2)
-
                 ChatView()
                     .tabItem { Label(t("tab.chat"), systemImage: "sparkles") }
+                    .tag(2)
+
+                SearchView()
+                    .tabItem { Label(t("tab.search"), systemImage: "magnifyingglass") }
                     .tag(3)
 
                 ProfileView()
@@ -333,8 +327,8 @@ private struct iPhoneRootView: View {
                 CSVImportInfoView()
             }
 
-            // Botão oculto enquanto o teclado estiver aberto
-            if !isKeyboardVisible {
+            // FAB — visível apenas no Dashboard (0) e Transações (1)
+            if !isKeyboardVisible && (selectedTab == 0 || selectedTab == 1) {
                 Button {
                     showNewTransaction = true
                 } label: {
@@ -351,11 +345,14 @@ private struct iPhoneRootView: View {
                 .frame(width: 56, height: 56)
                 .contentShape(Circle())
                 .buttonStyle(.plain)
+                .padding(.trailing, 35)
+                .padding(.bottom, 60)
                 .transition(.scale(scale: 0.8).combined(with: .opacity))
             }
         }
         .ignoresSafeArea(.keyboard)
         .animation(.easeInOut(duration: 0.2), value: isKeyboardVisible)
+        .animation(.easeInOut(duration: 0.2), value: selectedTab)
         .onReceive(NotificationCenter.default.publisher(
             for: UIResponder.keyboardWillShowNotification
         )) { _ in isKeyboardVisible = true }
@@ -365,15 +362,12 @@ private struct iPhoneRootView: View {
         // Navigate to Chat tab when a shared image arrives from the Share Extension
         .onChange(of: importManager.pendingSharedImage) { _, image in
             if image != nil {
-                withAnimation { selectedTab = 3 }
+                withAnimation { selectedTab = 2 }
             }
         }
         .onChange(of: importManager.pendingSharedChatFile != nil) { _, hasPendingFile in
             if hasPendingFile {
-                withAnimation {
-                    selectedTab = 3
-                    previousTab = 3
-                }
+                withAnimation { selectedTab = 2 }
             }
         }
         .onChange(of: importManager.pendingFile != nil) { _, hasPendingFile in
@@ -383,10 +377,7 @@ private struct iPhoneRootView: View {
         }
         .onChange(of: chatNavigationManager.pendingRequest) { _, request in
             if request != nil {
-                withAnimation {
-                    selectedTab = 3
-                    previousTab = 3
-                }
+                withAnimation { selectedTab = 2 }
             }
         }
         // Fallback: app was already running when extension saved the image
@@ -399,8 +390,7 @@ private struct iPhoneRootView: View {
         .onAppear {
             importManager.handleSharedImage()
             if importManager.pendingSharedImage != nil || importManager.pendingSharedChatFile != nil {
-                selectedTab = 3
-                previousTab = 3
+                selectedTab = 2
             }
             if importManager.pendingFile != nil {
                 showImportSheet = true
@@ -418,17 +408,33 @@ private struct iPhoneRootView: View {
         switch deepLink {
         case .home:
             selectedTab = 0
-            previousTab = 0
             deepLinkManager.consume(deepLink)
+        case .transactions:
+            selectedTab = 1
+            deepLinkManager.consume(deepLink)
+        case .transactionsCategory:
+            selectedTab = 1
+        case .chat:
+            selectedTab = 2
+            deepLinkManager.consume(deepLink)
+        case .search:
+            selectedTab = 3
+            deepLinkManager.consume(deepLink)
+        case .profile:
+            selectedTab = 4
+            deepLinkManager.consume(deepLink)
+        case .settings:
+            selectedTab = 4
         case .transaction:
             selectedTab = 1
-            previousTab = 1
-        case .category:
+        case .analysis:
+            selectedTab = 1
+        case .monthComparison:
             selectedTab = 0
-            previousTab = 0
-        case .goal:
+        case .category, .project:
+            selectedTab = 0
+        case .goal, .account:
             selectedTab = 4
-            previousTab = 4
         }
     }
 }
@@ -443,7 +449,7 @@ private struct iPadRootView: View {
     @State private var chatNavigationManager = ChatNavigationManager.shared
 
     enum Destination: Hashable {
-        case dashboard, transactions, chat, profile, settings
+        case dashboard, transactions, search, chat, profile, settings
     }
 
     @State private var selectedDestination: Destination? = .dashboard
@@ -468,6 +474,7 @@ private struct iPadRootView: View {
                     switch selectedDestination {
                     case .dashboard, nil: DashboardView()
                     case .transactions:   TransactionListView()
+                    case .search:         SearchView()
                     case .chat:           ChatView()
                     case .profile:        ProfileView()
                     case .settings:       SettingsView()
@@ -477,31 +484,35 @@ private struct iPadRootView: View {
             }
             .ignoresSafeArea()
 
-            // ── Floating Action Button ───────────────────────────────────
-            Button {
-                showNewTransaction = true
-            } label: {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.accentColor, Color.accentColor.opacity(0.80)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+            // ── Floating Action Button — Dashboard e Transactions apenas ──
+            if selectedDestination == .dashboard || selectedDestination == .transactions {
+                Button {
+                    showNewTransaction = true
+                } label: {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.accentColor, Color.accentColor.opacity(0.80)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
                         )
-                    )
-                    .frame(width: 60, height: 60)
-                    .shadow(color: Color.accentColor.opacity(0.40), radius: 12, y: 5)
-                    .overlay(
-                        Image(systemName: "plus")
-                            .font(.title2.weight(.semibold))
-                            .foregroundStyle(.white)
-                    )
+                        .frame(width: 60, height: 60)
+                        .shadow(color: Color.accentColor.opacity(0.40), radius: 12, y: 5)
+                        .overlay(
+                            Image(systemName: "plus")
+                                .font(.title2.weight(.semibold))
+                                .foregroundStyle(.white)
+                        )
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 28)
+                .padding(.bottom, 32)
+                .transition(.scale(scale: 0.8).combined(with: .opacity))
             }
-            .buttonStyle(.plain)
-            .padding(.trailing, 28)
-            .padding(.bottom, 28)
         }
         .ignoresSafeArea()
+        .animation(.easeInOut(duration: 0.2), value: selectedDestination)
         .sheet(isPresented: $showNewTransaction) {
             NewTransactionFlowView()
         }
@@ -555,11 +566,32 @@ private struct iPadRootView: View {
         case .home:
             selectedDestination = .dashboard
             deepLinkManager.consume(deepLink)
+        case .transactions:
+            selectedDestination = .transactions
+            deepLinkManager.consume(deepLink)
+        case .transactionsCategory:
+            selectedDestination = .transactions
+        case .chat:
+            selectedDestination = .chat
+            deepLinkManager.consume(deepLink)
+        case .search:
+            selectedDestination = .search
+            deepLinkManager.consume(deepLink)
+        case .profile:
+            selectedDestination = .profile
+            deepLinkManager.consume(deepLink)
+        case .settings:
+            selectedDestination = .settings
+            deepLinkManager.consume(deepLink)
         case .transaction:
             selectedDestination = .transactions
-        case .category:
+        case .analysis:
+            selectedDestination = .transactions
+        case .monthComparison:
             selectedDestination = .dashboard
-        case .goal:
+        case .category, .project:
+            selectedDestination = .dashboard
+        case .goal, .account:
             selectedDestination = .profile
         }
     }
@@ -586,6 +618,7 @@ private struct iPadSidebar: View {
         NavItem(destination: .dashboard,    icon: "chart.pie.fill",              labelKey: "tab.dashboard"),
         NavItem(destination: .transactions, icon: "list.bullet.rectangle",       labelKey: "tab.transactions"),
         NavItem(destination: .chat,         icon: "sparkles",                    labelKey: "tab.chat"),
+        NavItem(destination: .search,       icon: "magnifyingglass",             labelKey: "tab.search"),
     ]
 
     private let accountItems: [NavItem] = [
@@ -615,8 +648,8 @@ private struct iPadSidebar: View {
 
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 22) {
-                        navSection(title: "Principal", items: primaryItems)
-                        navSection(title: "Conta", items: accountItems)
+                        navSection(title: t("navigation.main"), items: primaryItems)
+                        navSection(title: t("navigation.account"), items: accountItems)
                     }
                     .padding(.top, 18)
                     .padding(.horizontal, 12)
@@ -627,65 +660,71 @@ private struct iPadSidebar: View {
         }
         .onAppear(perform: loadProfilePhoto)
         .sheet(isPresented: $showCloudInfoSheet) {
-            NavigationStack {
-                VStack(alignment: .leading, spacing: 20) {
-                    ZStack {
-                        Circle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        Color(red: 0.98, green: 0.94, blue: 0.80),
-                                        Color.white
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
+            if EntitlementManager.shared.isCloudEnabled {
+                NavigationStack {
+                    VStack(alignment: .leading, spacing: 20) {
+                        ZStack {
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            Color(red: 0.98, green: 0.94, blue: 0.80),
+                                            Color.white
+                                        ],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
                                 )
+                                .frame(width: 78, height: 78)
+
+                            Image(systemName: "checkmark.icloud.fill")
+                                .font(.system(size: 30, weight: .bold))
+                                .foregroundStyle(Color(red: 0.83, green: 0.63, blue: 0.12))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 8)
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(t("cloud.premiumBadge"))
+                                .font(.title2.bold())
+
+                            Text(t("cloud.activeSubtitle"))
+                                .font(.body)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        VStack(alignment: .leading, spacing: 12) {
+                            cloudInfoRow(
+                                icon: "icloud.fill",
+                                title: t("cloud.feature1Title"),
+                                subtitle: t("cloud.feature1Subtitle")
                             )
-                            .frame(width: 78, height: 78)
+                            cloudInfoRow(
+                                icon: "arrow.triangle.2.circlepath.icloud.fill",
+                                title: t("cloud.feature2Title"),
+                                subtitle: t("cloud.feature2Subtitle")
+                            )
+                        }
 
-                        Image(systemName: "checkmark.icloud.fill")
-                            .font(.system(size: 30, weight: .bold))
-                            .foregroundStyle(Color(red: 0.83, green: 0.63, blue: 0.12))
+                        Spacer()
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 8)
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("FinAInce Cloud Premium")
-                            .font(.title2.bold())
-
-                        Text("Seu backup no iCloud e a sincronizacao entre aparelhos estao ativos neste dispositivo.")
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        cloudInfoRow(
-                            icon: "icloud.fill",
-                            title: "Backup automatico",
-                            subtitle: "Seus dados ficam protegidos no seu iCloud privado."
-                        )
-                        cloudInfoRow(
-                            icon: "arrow.triangle.2.circlepath.icloud.fill",
-                            title: "Sync entre aparelhos",
-                            subtitle: "As informacoes acompanham voce no iPhone e no iPad."
-                        )
-                    }
-
-                    Spacer()
-                }
-                .padding(24)
-                .navigationTitle("Cloud Premium")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button(t("common.done")) {
-                            showCloudInfoSheet = false
+                    .padding(24)
+                    .navigationTitle(t("cloud.bannerTitle"))
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button(t("common.done")) {
+                                showCloudInfoSheet = false
+                            }
                         }
                     }
                 }
+                .presentationDetents([.medium])
+            } else {
+                FinAInceCloudView()
+                    .presentationDetents([.large])
+                    .presentationSizing(.page)
             }
-            .presentationDetents([.medium])
         }
     }
 
@@ -726,7 +765,7 @@ private struct iPadSidebar: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
 
-                Text("Seu espaco financeiro")
+                Text(t("profile.financialSpace"))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
@@ -734,7 +773,11 @@ private struct iPadSidebar: View {
                 Button {
                     showCloudInfoSheet = true
                 } label: {
-                    premiumCloudBadge
+                    if EntitlementManager.shared.isCloudEnabled {
+                        premiumCloudBadge
+                    } else {
+                        cloudSetupBadge
+                    }
                 }
                 .buttonStyle(.plain)
             }
@@ -859,7 +902,7 @@ private struct iPadSidebar: View {
                 .font(.caption.bold())
                 .foregroundStyle(Color(red: 0.83, green: 0.63, blue: 0.12))
 
-            Text("FinAInce Cloud Premium")
+            Text(t("cloud.premiumBadge"))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.primary)
         }
@@ -881,6 +924,43 @@ private struct iPadSidebar: View {
         .overlay(
             Capsule()
                 .strokeBorder(Color(red: 0.83, green: 0.63, blue: 0.12).opacity(0.28), lineWidth: 1)
+        )
+    }
+
+    private var cloudSetupBadge: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "icloud")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+
+                Text(t("cloud.bannerTitle"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.leading)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(t("common.configure"))
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(Color.accentColor)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.accentColor.opacity(0.10))
+                .clipShape(Capsule())
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            Capsule()
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.04))
+        )
+        .overlay(
+            Capsule()
+                .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08), lineWidth: 1)
         )
     }
 

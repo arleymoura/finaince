@@ -5,6 +5,7 @@ import LocalAuthentication
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.colorScheme) private var currentColorScheme
     @Query private var aiSettingsList: [AISettings]
 
     @AppStorage("notif.pendingExpense") private var paymentAlert = false
@@ -17,6 +18,12 @@ struct SettingsView: View {
     private var lm: LanguageManager { LanguageManager.shared }
     private var isRegularLayout: Bool { horizontalSizeClass == .regular }
     private let regularContentMaxWidth: CGFloat = 1100
+    private var regularHeaderTopColor: Color {
+        currentColorScheme == .dark ? Color(red: 0.34, green: 0.25, blue: 0.72) : Color.accentColor.opacity(0.96)
+    }
+    private var regularHeaderBottomColor: Color {
+        currentColorScheme == .dark ? Color(red: 0.18, green: 0.14, blue: 0.36) : Color.accentColor.opacity(0.72)
+    }
 
     var aiSettings: AISettings? { aiSettingsList.first }
 
@@ -45,7 +52,6 @@ struct SettingsView: View {
             privacySection
             notificationsSection
             preferencesSection
-            aboutSection
         }
     }
 
@@ -65,7 +71,7 @@ struct SettingsView: View {
                         .scrollContentBackground(.hidden)
                         .background(Color.clear)
                         .padding(.top, 12)
-                }
+                }.padding(.top, -50)
             }
         }
         .toolbar(.hidden, for: .navigationBar)
@@ -74,27 +80,34 @@ struct SettingsView: View {
     private func regularSettingsHeader(topInset: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(t("settings.title"))
-                .font(.title2.weight(.bold))
+                .font(.system(size: 30, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
 
             Text(t("settings.preferences"))
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.78))
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 24)
         .padding(.top, topInset + 18)
         .padding(.bottom, 22)
+        .frame(maxWidth: regularContentMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity)
         .background(
             LinearGradient(
                 colors: [
-                    Color.accentColor.opacity(0.96),
-                    Color.accentColor.opacity(0.72)
+                    regularHeaderTopColor,
+                    regularHeaderBottomColor
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
         )
+        .clipShape(
+            UnevenRoundedRectangle(
+                cornerRadii: .init(bottomLeading: 28, bottomTrailing: 28)
+            )
+        )
+        .shadow(color: regularHeaderBottomColor.opacity(currentColorScheme == .dark ? 0.28 : 0.18), radius: 14, x: 0, y: 8)
     }
 
     // MARK: - Sections

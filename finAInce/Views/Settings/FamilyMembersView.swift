@@ -124,14 +124,43 @@ func householdSummary(adults: Int, children: Int) -> String {
 
 struct FamilyMembersView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage("user.adultsCount") private var storedAdults = 1
     @AppStorage("user.childrenCount") private var storedChildren = 0
 
     @State private var adults = 1
     @State private var children = 0
     @State private var didLoadStoredValues = false
+    private let regularContentMaxWidth: CGFloat = 1100
+    private var isRegularLayout: Bool { horizontalSizeClass == .regular }
 
     var body: some View {
+        Group {
+            if isRegularLayout {
+                regularFamilyMembersView
+            } else {
+                familyMembersForm
+                    .navigationTitle(t("settings.familyMembers"))
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button(t("common.save")) {
+                                saveAndDismiss()
+                            }
+                            .fontWeight(.semibold)
+                        }
+                    }
+            }
+        }
+        .onAppear {
+            guard !didLoadStoredValues else { return }
+            adults = max(storedAdults, 1)
+            children = max(storedChildren, 0)
+            didLoadStoredValues = true
+        }
+    }
+
+    private var familyMembersForm: some View {
         Form {
             Section {
                 VStack(alignment: .leading, spacing: 10) {
@@ -154,23 +183,60 @@ struct FamilyMembersView: View {
             }
         }
         .listSectionSpacing(.compact)
-        .navigationTitle(t("settings.familyMembers"))
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button(t("common.save")) {
-                    storedAdults = adults
-                    storedChildren = children
-                    dismiss()
+    }
+
+    private var regularFamilyMembersView: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color(.systemGroupedBackground)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 16) {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 38, height: 38)
+                                .background(Color(.secondarySystemBackground))
+                                .clipShape(Circle())
+                        }
+
+                        Text(t("settings.familyMembers"))
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .foregroundStyle(.primary)
+
+                        Spacer()
+
+                        Button(t("common.save")) {
+                            saveAndDismiss()
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, proxy.safeAreaInsets.top + 18)
+                    .padding(.bottom, 18)
+                    .frame(maxWidth: regularContentMaxWidth)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(.systemGroupedBackground))
+
+                    familyMembersForm
+                        .frame(maxWidth: regularContentMaxWidth)
+                        .frame(maxWidth: .infinity)
+                        .scrollContentBackground(.hidden)
+                        .background(Color.clear)
                 }
-                .fontWeight(.semibold)
             }
         }
-        .onAppear {
-            guard !didLoadStoredValues else { return }
-            adults = max(storedAdults, 1)
-            children = max(storedChildren, 0)
-            didLoadStoredValues = true
-        }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private func saveAndDismiss() {
+        storedAdults = adults
+        storedChildren = children
+        dismiss()
     }
 }

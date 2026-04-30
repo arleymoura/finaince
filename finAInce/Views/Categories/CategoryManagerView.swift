@@ -4,13 +4,17 @@ import SwiftData
 // MARK: - Category Manager (root list)
 
 struct CategoryManagerView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query private var categories: [Category]
 
     @State private var categoryToEdit: Category? = nil
     @State private var showAddRoot     = false
     @State private var categoryToDelete: Category? = nil
     @State private var showDeleteAlert = false
+    private let regularContentMaxWidth: CGFloat = 1100
+    private var isRegularLayout: Bool { horizontalSizeClass == .regular }
 
     private var rootCategories: [Category] {
         categories
@@ -21,13 +25,47 @@ struct CategoryManagerView: View {
     }
 
     var body: some View {
+        Group {
+            if isRegularLayout {
+                regularCategoryManagerView
+            } else {
+                categoryList
+                    .navigationTitle(t("category.title"))
+                    .navigationBarTitleDisplayMode(.large)
+                    .toolbar {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button { showAddRoot = true } label: {
+                                Image(systemName: "plus")
+                            }
+                            .accessibilityLabel(t("category.addRoot"))
+                        }
+                    }
+            }
+        }
+        .sheet(item: $categoryToEdit) { cat in
+            CategoryFormView(category: cat)
+        }
+        .sheet(isPresented: $showAddRoot) {
+            CategoryFormView()
+        }
+        .alert(t("category.deleteTitle"), isPresented: $showDeleteAlert, presenting: categoryToDelete) { cat in
+            Button(t("common.delete"), role: .destructive) { modelContext.delete(cat) }
+            Button(t("common.cancel"), role: .cancel) {}
+        } message: { cat in
+            if !(cat.subcategories ?? []).isEmpty {
+                Text(t("category.deleteWithSubs", (cat.subcategories ?? []).count))
+            } else {
+                Text(t("category.deleteMessage"))
+            }
+        }
+    }
+
+    private var categoryList: some View {
         List {
             ForEach(rootCategories) { root in
                 Section {
-                    // ── Categoria pai ──────────────────────────────
                     categoryRow(root)
 
-                    // ── Drill-down para subcategorias ──────────────
                     NavigationLink {
                         SubcategoryListView(parent: root)
                     } label: {
@@ -64,31 +102,59 @@ struct CategoryManagerView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .navigationTitle(t("category.title"))
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { showAddRoot = true } label: {
-                    Image(systemName: "plus")
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
+    }
+
+    private var regularCategoryManagerView: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color(.systemGroupedBackground)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 16) {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 38, height: 38)
+                                .background(Color(.secondarySystemBackground))
+                                .clipShape(Circle())
+                        }
+
+                        Text(t("category.title"))
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .foregroundStyle(.primary)
+
+                        Spacer()
+
+                        Button { showAddRoot = true } label: {
+                            Image(systemName: "plus")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 38, height: 38)
+                                .background(Color(.secondarySystemBackground))
+                                .clipShape(Circle())
+                        }
+                        .accessibilityLabel(t("category.addRoot"))
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, proxy.safeAreaInsets.top + 18)
+                    .padding(.bottom, 18)
+                    .frame(maxWidth: regularContentMaxWidth)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(.systemGroupedBackground))
+
+                    categoryList
+                        .frame(maxWidth: regularContentMaxWidth)
+                        .frame(maxWidth: .infinity)
                 }
-                .accessibilityLabel(t("category.addRoot"))
             }
         }
-        .sheet(item: $categoryToEdit) { cat in
-            CategoryFormView(category: cat)
-        }
-        .sheet(isPresented: $showAddRoot) {
-            CategoryFormView()
-        }
-        .alert(t("category.deleteTitle"), isPresented: $showDeleteAlert, presenting: categoryToDelete) { cat in
-            Button(t("common.delete"), role: .destructive) { modelContext.delete(cat) }
-            Button(t("common.cancel"), role: .cancel) {}
-        } message: { cat in
-            if !(cat.subcategories ?? []).isEmpty {
-                Text(t("category.deleteWithSubs", (cat.subcategories ?? []).count))
-            } else {
-                Text(t("category.deleteMessage"))
-            }
-        }
+        .toolbar(.hidden, for: .navigationBar)
     }
 
     // MARK: - Category row
@@ -133,11 +199,15 @@ struct CategoryManagerView: View {
 struct SubcategoryListView: View {
     let parent: Category
 
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.modelContext) private var modelContext
     @State private var categoryToEdit: Category?   = nil
     @State private var showAdd                     = false
     @State private var categoryToDelete: Category? = nil
     @State private var showDeleteAlert             = false
+    private let regularContentMaxWidth: CGFloat = 1100
+    private var isRegularLayout: Bool { horizontalSizeClass == .regular }
 
     private var subcategories: [Category] {
         (parent.subcategories ?? []).sorted { lhs, rhs in
@@ -146,24 +216,21 @@ struct SubcategoryListView: View {
     }
 
     var body: some View {
-        List {
-            if subcategories.isEmpty {
-                emptyState
+        Group {
+            if isRegularLayout {
+                regularSubcategoryListView
             } else {
-                ForEach(subcategories) { sub in
-                    subcategoryRow(sub)
-                }
-            }
-        }
-        .listStyle(.insetGrouped)
-        .navigationTitle(parent.displayName)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { showAdd = true } label: {
-                    Image(systemName: "plus")
-                }
-                .accessibilityLabel(t("category.addSubLabel"))
+                subcategoryList
+                    .navigationTitle(parent.displayName)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button { showAdd = true } label: {
+                                Image(systemName: "plus")
+                            }
+                            .accessibilityLabel(t("category.addSubLabel"))
+                        }
+                    }
             }
         }
         .sheet(item: $categoryToEdit) { cat in
@@ -188,6 +255,73 @@ struct SubcategoryListView: View {
         } message: { _ in
             Text(t("category.deleteMessage"))
         }
+    }
+
+    private var subcategoryList: some View {
+        List {
+            if subcategories.isEmpty {
+                emptyState
+            } else {
+                ForEach(subcategories) { sub in
+                    subcategoryRow(sub)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
+    }
+
+    private var regularSubcategoryListView: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color(.systemGroupedBackground)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 16) {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 38, height: 38)
+                                .background(Color(.secondarySystemBackground))
+                                .clipShape(Circle())
+                        }
+
+                        Text(parent.displayName)
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .foregroundStyle(.primary)
+                            .lineLimit(2)
+
+                        Spacer()
+
+                        Button { showAdd = true } label: {
+                            Image(systemName: "plus")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 38, height: 38)
+                                .background(Color(.secondarySystemBackground))
+                                .clipShape(Circle())
+                        }
+                        .accessibilityLabel(t("category.addSubLabel"))
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, proxy.safeAreaInsets.top + 18)
+                    .padding(.bottom, 18)
+                    .frame(maxWidth: regularContentMaxWidth)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(.systemGroupedBackground))
+
+                    subcategoryList
+                        .frame(maxWidth: regularContentMaxWidth)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
     }
 
     // MARK: - Empty state

@@ -20,24 +20,36 @@ private struct FAQSection: Identifiable {
 // MARK: - HelpView
 
 struct HelpView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var sections: [FAQSection] = []
+    private let regularContentMaxWidth: CGFloat = 1100
+    private var isRegularLayout: Bool { horizontalSizeClass == .regular }
 
     var body: some View {
+        Group {
+            if isRegularLayout {
+                regularHelpView
+            } else {
+                helpList
+                    .navigationTitle(t("help.title"))
+                    .navigationBarTitleDisplayMode(.large)
+            }
+        }
+        .onAppear { sections = makeSections() }
+    }
+
+    private var helpList: some View {
         List {
-            // ── Privacy highlight card ─────────────────────────────────
             Section {
                 privacyHighlightCard
                     .listRowBackground(Color.clear)
-                    
             }
-            
 
-            // ── FAQ sections ───────────────────────────────────────────
             ForEach($sections) { $section in
                 faqSection($section)
             }
 
-            // ── Footer ─────────────────────────────────────────────────
             Section {
                 footerView
                     .listRowBackground(Color.clear)
@@ -47,9 +59,49 @@ struct HelpView: View {
         }
         .listStyle(.insetGrouped)
         .listSectionSpacing(6)
-        .navigationTitle(t("help.title"))
-        .navigationBarTitleDisplayMode(.large)
-        .onAppear { sections = makeSections() }
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
+    }
+
+    private var regularHelpView: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color(.systemGroupedBackground)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 16) {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 38, height: 38)
+                                .background(Color(.secondarySystemBackground))
+                                .clipShape(Circle())
+                        }
+
+                        Text(t("help.title"))
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .foregroundStyle(.primary)
+
+                        Spacer()
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, proxy.safeAreaInsets.top + 18)
+                    .padding(.bottom, 18)
+                    .frame(maxWidth: regularContentMaxWidth)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(.systemGroupedBackground))
+
+                    helpList
+                        .frame(maxWidth: regularContentMaxWidth)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
     }
 
     // MARK: - Privacy Highlight Card

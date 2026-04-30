@@ -18,10 +18,17 @@ final class MonthComparisonViewModel {
     var exportErrorMessage: String?
 
     private let transactions: [Transaction]
+    private let goals: [Goal]
     private let aiSettings: AISettings?
+
+    struct CategoryPresentation {
+        let icon: String
+        let color: Color
+    }
 
     init(
         transactions: [Transaction],
+        goals: [Goal],
         currencyCode: String,
         aiSettings: AISettings?,
         selectedAccountId: UUID? = nil,
@@ -29,6 +36,7 @@ final class MonthComparisonViewModel {
         initialMonthB: MonthReference? = nil
     ) {
         self.transactions = transactions
+        self.goals = goals
         self.currencyCode = currencyCode
         self.aiSettings = aiSettings
         self.selectedAccountId = selectedAccountId
@@ -77,9 +85,35 @@ final class MonthComparisonViewModel {
         return t("monthComparator.ai.stable")
     }
 
+    func presentation(for categoryName: String) -> CategoryPresentation {
+        if let category = transactions
+            .compactMap({ $0.category?.rootCategory ?? $0.category })
+            .first(where: { $0.displayName == categoryName }) {
+            return CategoryPresentation(
+                icon: category.icon.isEmpty ? "square.grid.2x2.fill" : category.icon,
+                color: Color(hex: category.color)
+            )
+        }
+
+        if let category = goals
+            .compactMap({ $0.category?.rootCategory ?? $0.category })
+            .first(where: { $0.displayName == categoryName }) {
+            return CategoryPresentation(
+                icon: category.icon.isEmpty ? "target" : category.icon,
+                color: Color(hex: category.color)
+            )
+        }
+
+        return CategoryPresentation(
+            icon: "questionmark.circle.fill",
+            color: .secondary
+        )
+    }
+
     private func refreshLocalResult() {
         result = MonthComparatorEngine.compare(
             transactions: transactions,
+            goals: goals,
             monthA: monthA,
             monthB: monthB,
             selectedAccountId: selectedAccountId

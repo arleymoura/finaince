@@ -20,6 +20,8 @@ import SwiftUI
     private(set) var isRestoring   = false
     private(set) var product: Product?
     private(set) var purchaseError: String?
+    private(set) var isLoadingProduct = false
+    private(set) var productLoadError: String?
 
     enum PurchaseState {
         /// Nunca comprou
@@ -73,12 +75,24 @@ import SwiftUI
 
     @MainActor
     func loadProduct() async {
+        isLoadingProduct = true
+        productLoadError = nil
         do {
             let products = try await Product.products(for: [Self.productID])
             product = products.first
+            if let product {
+                DebugLaunchLog.log("☁️ [Cloud] Product loaded id=\(product.id) price=\(product.displayPrice)")
+            } else {
+                productLoadError = "Produto indisponível no momento."
+                DebugLaunchLog.log("☁️ [Cloud] Product list returned empty for id=\(Self.productID)")
+            }
         } catch {
+            product = nil
+            productLoadError = "Não foi possível carregar o produto agora."
             print("☁️ [Cloud] Erro ao carregar produto: \(error)")
+            DebugLaunchLog.log("☁️ [Cloud] Product load failed id=\(Self.productID) error=\(error.localizedDescription)")
         }
+        isLoadingProduct = false
     }
 
     // MARK: - Purchase
@@ -211,4 +225,17 @@ import SwiftUI
         }
         DebugLaunchLog.log("☁️ [Cloud] Initial sync marked as completed")
     }
+
+    #if DEBUG
+    @MainActor
+    func debugDisableCloudEntitlement() {
+        UserDefaults.standard.set(false, forKey: enabledKey)
+        UserDefaults.standard.set(false, forKey: awaitingInitialSyncKey)
+        UserDefaults.standard.removeObject(forKey: activationDateKey)
+        UserDefaults.standard.synchronize()
+        purchaseError = nil
+        purchaseState = .notPurchased
+        DebugLaunchLog.log("☁️ [Cloud][DEBUG] Local entitlement reset to notPurchased")
+    }
+    #endif
 }

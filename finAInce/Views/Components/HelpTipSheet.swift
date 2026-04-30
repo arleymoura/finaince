@@ -66,7 +66,7 @@ struct HelpTipModal: View {
             VStack(alignment: .leading, spacing: 20) {
                 Text(item.body)
                     .font(.subheadline)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(FinAInceColor.primaryText)
                     .fixedSize(horizontal: false, vertical: true)
                     .lineSpacing(5)
 
@@ -87,13 +87,17 @@ struct HelpTipModal: View {
                 .buttonStyle(.plain)
             }
             .padding(20)
-            .background(Color(.systemBackground))
+            .background(FinAInceColor.primarySurface)
             .clipShape(UnevenRoundedRectangle(cornerRadii: .init(
                 topLeading: 0, bottomLeading: 18, bottomTrailing: 18, topTrailing: 0
             )))
         }
         .frame(maxWidth: 340)
-        .shadow(color: .black.opacity(0.28), radius: 32, x: 0, y: 12)
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .strokeBorder(FinAInceColor.borderSubtle, lineWidth: 1)
+        )
+        .shadow(color: FinAInceColor.borderStrong.opacity(0.35), radius: 32, x: 0, y: 12)
         .padding(.horizontal, 24)
     }
 }
@@ -110,7 +114,7 @@ struct HelpTipOverlayModifier: ViewModifier {
             .overlay {
                 if let tip = item {
                     ZStack {
-                        Color.black.opacity(0.55)
+                        FinAInceColor.primaryText.opacity(0.5)
                             .ignoresSafeArea()
                             .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { item = nil } }
                             .transition(.opacity)

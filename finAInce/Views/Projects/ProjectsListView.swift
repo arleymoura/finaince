@@ -4,7 +4,9 @@ import SwiftData
 // MARK: - ProjectsListView
 
 struct ProjectsListView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query(sort: \CostCenter.createdAt, order: .reverse) private var projects: [CostCenter]
     @Query private var allTransactions: [Transaction]
     @Query private var allFiles: [CostCenterFile]
@@ -12,6 +14,8 @@ struct ProjectsListView: View {
 
     @State private var showCreateForm = false
     @State private var showInactive   = false
+    private let regularContentMaxWidth: CGFloat = 1100
+    private var isRegularLayout: Bool { horizontalSizeClass == .regular }
 
     // MARK: - Filtered & sorted
 
@@ -35,6 +39,32 @@ struct ProjectsListView: View {
 
     var body: some View {
         Group {
+            if isRegularLayout {
+                regularProjectsView
+            } else {
+                projectsContent
+                    .navigationTitle(t("projects.title"))
+                    .navigationBarTitleDisplayMode(.large)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button { showCreateForm = true } label: {
+                                Image(systemName: "plus")
+                            }
+                        }
+                    }
+            }
+        }
+        .sheet(isPresented: $showCreateForm) {
+            ProjectFormView()
+                .presentationDetents([.fraction(0.78), .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(28)
+                .presentationSizing(.form)
+        }
+    }
+
+    private var projectsContent: some View {
+        Group {
             if projects.isEmpty {
                 emptyState
             } else if useGridLayout {
@@ -43,18 +73,56 @@ struct ProjectsListView: View {
                 listLayout
             }
         }
-        .navigationTitle(t("projects.title"))
-        .navigationBarTitleDisplayMode(.large)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { showCreateForm = true } label: {
-                    Image(systemName: "plus")
+    }
+
+    private var regularProjectsView: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color(.systemGroupedBackground)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 16) {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 38, height: 38)
+                                .background(Color(.secondarySystemBackground))
+                                .clipShape(Circle())
+                        }
+
+                        Text(t("projects.title"))
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .foregroundStyle(.primary)
+
+                        Spacer()
+
+                        Button { showCreateForm = true } label: {
+                            Image(systemName: "plus")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 38, height: 38)
+                                .background(Color(.secondarySystemBackground))
+                                .clipShape(Circle())
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, proxy.safeAreaInsets.top + 18)
+                    .padding(.bottom, 18)
+                    .frame(maxWidth: regularContentMaxWidth)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(.systemGroupedBackground))
+
+                    projectsContent
+                        .frame(maxWidth: regularContentMaxWidth)
+                        .frame(maxWidth: .infinity)
                 }
             }
         }
-        .sheet(isPresented: $showCreateForm) {
-            ProjectFormView()
-        }
+        .toolbar(.hidden, for: .navigationBar)
     }
 
     // MARK: - List Layout
@@ -137,6 +205,8 @@ struct ProjectsListView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
     }
 
     private func projectListLink(_ project: CostCenter) -> some View {
@@ -167,11 +237,45 @@ struct ProjectsListView: View {
                 }
 
                 // ── Inativos ──────────────────────────────────────────────
-                if !inactiveProjects.isEmpty {
+                if showInactive && !inactiveProjects.isEmpty {
                     projectGridSection(
                         title: t("projects.inactive"),
                         projects: inactiveProjects
                     )
+                }
+
+                if !inactiveProjects.isEmpty {
+                    Button {
+                        withAnimation { showInactive.toggle() }
+                    } label: {
+                        HStack(spacing: 10) {
+                            Text(showInactive ? t("projects.hideInactive") : t("projects.showInactive"))
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Color.accentColor)
+
+                            Spacer()
+
+                            if !showInactive {
+                                Text("\(inactiveProjects.count)")
+                                    .font(.subheadline.monospacedDigit())
+                                    .foregroundStyle(FinAInceColor.secondaryText)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(FinAInceColor.insetSurface)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity)
+                        .background(FinAInceColor.elevatedSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(FinAInceColor.borderSubtle, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 16)
@@ -294,62 +398,116 @@ private struct ProjectListRow: View {
     let fileCount: Int
     let currencyCode: String
 
+    private var budget: Double? {
+        guard let budget = project.budget, budget > 0 else { return nil }
+        return budget
+    }
+
+    private var progress: Double? {
+        guard budget != nil else { return nil }
+        return min(project.budgetProgress(spent: spent), 1.0)
+    }
+
+    private var status: (label: String, color: Color)? {
+        guard budget != nil else { return nil }
+        let budgetStatus = project.budgetStatus(spent: spent)
+        let label: String
+        switch budgetStatus {
+        case .normal:
+            label = t("goal.status.good")
+        case .warning:
+            label = t("goal.status.warning")
+        case .critical:
+            label = t("goal.status.exceeded")
+        case .noBudget:
+            label = t("goal.status.great")
+        }
+        return (label, budgetStatus.color)
+    }
+
     var body: some View {
-        HStack(spacing: 12) {
-            // Icon
+        HStack(alignment: .top, spacing: 12) {
             ZStack {
-                RoundedRectangle(cornerRadius: 10)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Color(hex: project.color).opacity(0.15))
-                    .frame(width: 40, height: 40)
+                    .frame(width: 42, height: 42)
                 Image(systemName: project.icon)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color(hex: project.color))
             }
             .opacity(project.isActive ? 1 : 0.5)
+            .padding(.top, 2)
 
-            // Info
-            VStack(alignment: .leading, spacing: 3) {
-                Text(project.name)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                    .foregroundStyle(project.isActive ? .primary : .secondary)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(project.name)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .foregroundStyle(project.isActive ? FinAInceColor.primaryText : FinAInceColor.secondaryText)
 
-                // Meta row
-                HStack(spacing: 4) {
+                    Spacer(minLength: 8)
+
                     Text(spent.asCurrency(currencyCode))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(FinAInceColor.primaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
 
+                HStack(spacing: 6) {
                     if txCount > 0 {
-                        Text("·").foregroundStyle(.tertiary).font(.caption)
-                        Text("\(txCount) \(t("projects.transactions"))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        metaChip(label: "\(txCount)", systemImage: "arrow.left.arrow.right")
                     }
 
                     if fileCount > 0 {
-                        Text("·").foregroundStyle(.tertiary).font(.caption)
-                        Label("\(fileCount)", systemImage: "paperclip")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        metaChip(label: "\(fileCount)", systemImage: "paperclip")
+                    }
+
+                    if let budget {
+                        metaChip(label: budget.asCurrency(currencyCode), systemImage: "target")
                     }
                 }
 
-                // Budget bar — only when budget is set
-                if let budget = project.budget, budget > 0 {
-                    let progress = project.budgetProgress(spent: spent)
-                    let status   = project.budgetStatus(spent: spent)
-                    ProgressView(value: min(progress, 1.0))
-                        .tint(status.color)
-                        .frame(maxWidth: 160)
-                        .scaleEffect(x: 1, y: 0.7, anchor: .center)
-                        .padding(.top, 1)
+                if let progress, let status {
+                    VStack(alignment: .leading, spacing: 6) {
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule()
+                                    .fill(FinAInceColor.insetSurface)
+                                    .frame(height: 7)
+                                Capsule()
+                                    .fill(status.color)
+                                    .frame(width: geo.size.width * progress, height: 7)
+                            }
+                        }
+                        .frame(height: 7)
+
+                        HStack(spacing: 8) {
+                            Text(status.label)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(status.color)
+                            Spacer()
+                            Text("\(Int(progress * 100))%")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(FinAInceColor.secondaryText)
+                        }
+                    }
                 }
             }
 
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 8)
+    }
+
+    private func metaChip(label: String, systemImage: String) -> some View {
+        Label(label, systemImage: systemImage)
+            .font(.caption2)
+            .foregroundStyle(FinAInceColor.secondaryText)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(FinAInceColor.insetSurface)
+            .clipShape(Capsule())
     }
 }
 

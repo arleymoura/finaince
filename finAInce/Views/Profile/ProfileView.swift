@@ -5,6 +5,7 @@ import PhotosUI
 struct ProfileView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.colorScheme) private var colorScheme
     @Query private var goals: [Goal]
     @Query private var aiSettingsList: [AISettings]
     @Query private var accounts: [Account]
@@ -26,6 +27,7 @@ struct ProfileView: View {
     @State private var deepLinkManager = DeepLinkManager.shared
     @State private var selectedAccount: Account?
     @State private var showCreateAccount = false
+    @State private var showDeepLinkedSettings = false
     @State private var showCloudPaywall = false
     #if DEBUG
     @State private var showDebugPaywall = false
@@ -33,21 +35,31 @@ struct ProfileView: View {
     @State private var entitlements = EntitlementManager.shared
     @State private var profileCloudSync = ProfileCloudSyncStore.shared
     private let regularContentMaxWidth: CGFloat = 1100
+    private var regularHeaderTopColor: Color {
+        colorScheme == .dark ? Color(red: 0.34, green: 0.25, blue: 0.72) : Color.accentColor.opacity(0.98)
+    }
+    private var regularHeaderBottomColor: Color {
+        colorScheme == .dark ? Color(red: 0.18, green: 0.14, blue: 0.36) : Color.accentColor.opacity(0.76)
+    }
     
     var aiSettings: AISettings? { aiSettingsList.first }
     private var isRegularLayout: Bool { horizontalSizeClass == .regular }
+    private var compactTopInset: CGFloat {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first(where: { $0.activationState == .foregroundActive })?.keyWindow?
+            .safeAreaInsets.top ?? 0
+    }
     
     var body: some View {
         NavigationStack {
-            profileList
-                .scrollContentBackground(.hidden)
-                .background(WorkspaceBackground(isRegularLayout: isRegularLayout))
-                .frame(maxWidth: isRegularLayout ? regularContentMaxWidth : .infinity)
-                .frame(maxWidth: .infinity)
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    profileHeaderCard
+            Group {
+                if isRegularLayout {
+                    regularProfileView
+                } else {
+                    compactProfileView
                 }
-                .toolbar(.hidden, for: .navigationBar)
+            }
             .onChange(of: photoPicker) { _, item in
                 Task {
                     if let data = try? await item?.loadTransferable(type: Data.self) {
@@ -85,6 +97,9 @@ struct ProfileView: View {
                 AccountFormView()
                     .presentationDetents([.medium, .large])
             }
+            .sheet(isPresented: $showDeepLinkedSettings) {
+                NavigationStack { SettingsView() }
+            }
             .sheet(isPresented: $showCloudPaywall) {
                 FinAInceCloudView()
             }
@@ -96,18 +111,77 @@ struct ProfileView: View {
         }
     }
 
+    //iphone
+    private var compactProfileView: some View {
+        GeometryReader { proxy in
+            ZStack {
+                WorkspaceBackground(isRegularLayout: false)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    compactProfileHeader(topInset: proxy.safeAreaInsets.top)
+                        .ignoresSafeArea(edges: .top)
+
+                    profileList
+                        .scrollContentBackground(.hidden)
+                        .background(Color.clear)
+                }.padding(.top, -50)
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+        
+    }
+    
+    
+    //ipad 
+    private var regularProfileView: some View {
+        GeometryReader { proxy in
+            ZStack {
+                WorkspaceBackground(isRegularLayout: isRegularLayout)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    regularProfileHeader(topInset: proxy.safeAreaInsets.top)
+                        .ignoresSafeArea(edges: .top)
+
+                    profileList
+                        .frame(maxWidth: regularContentMaxWidth)
+                        .frame(maxWidth: .infinity)
+                        .scrollContentBackground(.hidden)
+                        .background(Color.clear)
+                        .padding(.top, 12)
+                }.padding(.top, -55)
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
     // MARK: - Deep Links
 
     private func handleDeepLink(_ deepLink: DeepLink?) {
-        guard case let .goal(id) = deepLink else { return }
+        switch deepLink {
+        case let .goal(id):
+            guard let goal = goals.first(where: { matchesDeepLinkID(id, uuid: $0.id) }) else {
+                deepLinkManager.routeToHome()
+                return
+            }
 
-        guard let goal = goals.first(where: { matchesDeepLinkID(id, uuid: $0.id) }) else {
-            deepLinkManager.routeToHome()
+            deepLinkedGoal = goal
+            deepLinkManager.consume(.goal(id: id))
+        case let .account(id):
+            guard let account = accounts.first(where: { matchesDeepLinkID(id, uuid: $0.id) }) else {
+                deepLinkManager.routeToHome()
+                return
+            }
+
+            selectedAccount = account
+            deepLinkManager.consume(.account(id: id))
+        case .settings:
+            showDeepLinkedSettings = true
+            deepLinkManager.consume(.settings)
+        default:
             return
         }
-
-        deepLinkedGoal = goal
-        deepLinkManager.consume(.goal(id: id))
     }
 
     private func matchesDeepLinkID(_ id: String, uuid: UUID) -> Bool {
@@ -241,10 +315,12 @@ struct ProfileView: View {
                 } label: {
                     Label(t("profile.manageCategories"), systemImage: "tag.fill")
                 }
-                NavigationLink {
-                    SettingsView()
-                } label: {
-                    Label(t("profile.settings"), systemImage: "gearshape.fill")
+                if !isRegularLayout {
+                    NavigationLink {
+                        SettingsView()
+                    } label: {
+                        Label(t("profile.settings"), systemImage: "gearshape.fill")
+                    }
                 }
                 NavigationLink {
                     HelpView()
@@ -294,7 +370,7 @@ struct ProfileView: View {
             #endif
         }
         .listStyle(.insetGrouped)
-        .contentMargins(.top, 16, for: .scrollContent)
+        .contentMargins(.top, isRegularLayout ? 16 : 0, for: .scrollContent)
         .environment(\.defaultMinListHeaderHeight, 0)
         .listSectionSpacing(12)
     }
@@ -302,11 +378,39 @@ struct ProfileView: View {
     // MARK: - Profile Header
 
     private var profileHeaderCard: some View {
+        profileHeader(
+            topPadding: compactTopInset + 16,
+            bottomPadding: 24,
+            extendsIntoTopSafeArea: true
+        )
+    }
+
+    private func compactProfileHeader(topInset: CGFloat) -> some View {
+        profileHeader(
+            topPadding: topInset + 16,
+            bottomPadding: 24,
+            extendsIntoTopSafeArea: false
+        )
+    }
+
+    private func regularProfileHeader(topInset: CGFloat) -> some View {
+        profileHeader(
+            topPadding: topInset + 18,
+            bottomPadding: 24,
+            extendsIntoTopSafeArea: false
+        )
+    }
+
+    private func profileHeader(
+        topPadding: CGFloat,
+        bottomPadding: CGFloat,
+        extendsIntoTopSafeArea: Bool
+    ) -> some View {
         VStack(alignment: .leading, spacing: 20) {
             // ── Title ────────────────────────────────────────────────────
             Text(t("profile.title"))
                 .font(.system(size: 30, weight: .bold, design: .rounded))
-                .foregroundStyle(.primary)
+                .foregroundStyle(.white)
 
             // ── Avatar + Name ─────────────────────────────────────────────
             HStack(spacing: 16) {
@@ -335,12 +439,12 @@ struct ProfileView: View {
                         .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 3)
 
                         Circle()
-                            .fill(Color(.systemBackground))
+                            .fill(.white.opacity(0.96))
                             .frame(width: 26, height: 26)
                             .overlay(
                                 Image(systemName: "camera.fill")
                                     .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.accentColor)
                             )
                             .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
                     }
@@ -353,10 +457,10 @@ struct ProfileView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(userName)
                             .font(.title3.bold())
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(.white)
                         Text(t("profile.tapToEdit"))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.white.opacity(0.82))
                     }
                 }
                 .buttonStyle(.plain)
@@ -371,36 +475,29 @@ struct ProfileView: View {
         .frame(maxWidth: isRegularLayout ? regularContentMaxWidth : .infinity, alignment: .leading)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, isRegularLayout ? 24 : 20)
-        .padding(.top, 16)
-        .padding(.bottom, 24)
+        .padding(.top, topPadding)
+        .padding(.bottom, bottomPadding)
         .background {
-            // As shapes com ignoresSafeArea(edges: .top) cobrem a status bar.
-            // O clipShape NÃO é usado no view externo — as bordas arredondadas
-            // são definidas pelas próprias shapes aqui dentro, que se estendem
-            // para cima sem serem cortadas.
-            ZStack {
-                UnevenRoundedRectangle(cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24))
-                    .fill(
-                        LinearGradient(
-                            colors: [Color(.systemGray6), Color(.systemBackground)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .ignoresSafeArea(edges: .top)
-
-                UnevenRoundedRectangle(cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24))
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.accentColor.opacity(0.06), .clear],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .ignoresSafeArea(edges: .top)
-            }
+            headerBackground(extendsIntoTopSafeArea: extendsIntoTopSafeArea)
         }
-        .shadow(color: Color.black.opacity(0.10), radius: 14, x: 0, y: 8)
+        .clipShape(
+            UnevenRoundedRectangle(
+                cornerRadii: .init(bottomLeading: 28, bottomTrailing: 28)
+            )
+        )
+        .shadow(color: regularHeaderBottomColor.opacity(colorScheme == .dark ? 0.28 : 0.18), radius: 14, x: 0, y: 8)
+    }
+
+    private func headerBackground(extendsIntoTopSafeArea: Bool) -> some View {
+        LinearGradient(
+            colors: [
+                regularHeaderTopColor,
+                regularHeaderBottomColor
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+        .modifier(TopSafeAreaBleed(enabled: extendsIntoTopSafeArea))
     }
 
     private var emptyGoals: some View {
@@ -574,20 +671,60 @@ struct ProfileView: View {
     #endif
 }
 
+private struct TopSafeAreaBleed: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.ignoresSafeArea(edges: .top)
+        } else {
+            content
+        }
+    }
+}
+
 // MARK: - Goals List
 
 struct GoalsListView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Query private var goals: [Goal]
 
     @State private var showGoalForm = false
     @State private var goalToEdit: Goal? = nil
+    private let regularContentMaxWidth: CGFloat = 1100
+    private var isRegularLayout: Bool { horizontalSizeClass == .regular }
 
     var body: some View {
-       
-        
-       
-        
+        Group {
+            if isRegularLayout {
+                regularGoalsView
+            } else {
+                goalsList
+                    .navigationTitle(t("profile.goals"))
+                    .navigationBarTitleDisplayMode(.large)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                showGoalForm = true
+                            } label: {
+                                Image(systemName: "plus")
+                            }
+                            .accessibilityLabel(t("profile.newGoal"))
+                        }
+                    }
+            }
+        }
+        .sheet(isPresented: $showGoalForm) {
+            GoalFormView()
+        }
+        .sheet(item: $goalToEdit) { goal in
+            GoalFormView(goal: goal)
+        }
+    }
+
+    private var goalsList: some View {
         List {
             Section {
                 if goals.isEmpty {
@@ -618,24 +755,61 @@ struct GoalsListView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .navigationTitle(t("profile.goals"))
-        .navigationBarTitleDisplayMode(.large)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showGoalForm = true
-                } label: {
-                    Image(systemName: "plus")
+    }
+
+    private var regularGoalsView: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color(.systemGroupedBackground)
+                    .ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    HStack(spacing: 16) {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 38, height: 38)
+                                .background(Color(.secondarySystemBackground))
+                                .clipShape(Circle())
+                        }
+
+                        Text(t("profile.goals"))
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .foregroundStyle(.primary)
+
+                        Spacer()
+
+                        Button {
+                            showGoalForm = true
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .frame(width: 38, height: 38)
+                                .background(Color(.secondarySystemBackground))
+                                .clipShape(Circle())
+                        }
+                        .accessibilityLabel(t("profile.newGoal"))
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, proxy.safeAreaInsets.top + 18)
+                    .padding(.bottom, 18)
+                    .frame(maxWidth: regularContentMaxWidth)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(.systemGroupedBackground))
+
+                    goalsList
+                        .frame(maxWidth: regularContentMaxWidth)
+                        .frame(maxWidth: .infinity)
+                        .scrollContentBackground(.hidden)
+                        .background(Color.clear)
                 }
-                .accessibilityLabel(t("profile.newGoal"))
             }
         }
-        .sheet(isPresented: $showGoalForm) {
-            GoalFormView()
-        }
-        .sheet(item: $goalToEdit) { goal in
-            GoalFormView(goal: goal)
-        }
+        .toolbar(.hidden, for: .navigationBar)
     }
 
     private var emptyGoals: some View {

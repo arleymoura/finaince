@@ -54,7 +54,7 @@ struct AnalysisView: View {
                 .scaleEffect(1.5)
             Text(t("ai.analyzing"))
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(FinAInceColor.secondaryText)
         }
         .frame(maxWidth: .infinity, minHeight: 200)
     }
@@ -64,11 +64,11 @@ struct AnalysisView: View {
             HStack {
                 Label(t("ai.generatedByProvider", analysis.provider), systemImage: "sparkles")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FinAInceColor.secondaryText)
                 Spacer()
                 Text(analysis.generatedAt.formatted(.relative(presentation: .named)))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FinAInceColor.secondaryText)
             }
 
             // Renderiza o conteúdo markdown
@@ -76,8 +76,7 @@ struct AnalysisView: View {
                 .font(.subheadline)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .finElevatedSurface(cornerRadius: 12)
         }
     }
 
@@ -85,18 +84,18 @@ struct AnalysisView: View {
         VStack(spacing: 20) {
             Image(systemName: "chart.line.uptrend.xyaxis.circle")
                 .font(.system(size: 56))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(FinAInceColor.secondaryText)
             Text(t("ai.noAnalysis"))
                 .font(.headline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(FinAInceColor.primaryText)
             Text(t("ai.noAnalysisDesc"))
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(FinAInceColor.secondaryText)
                 .multilineTextAlignment(.center)
             Button(t("ai.generate")) {
                 generateAnalysis()
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(FinPrimaryButtonStyle())
         }
         .padding(.top, 40)
     }

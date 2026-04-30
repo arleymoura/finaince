@@ -33,6 +33,17 @@ enum RecurrenceType: String, Codable, CaseIterable {
     case annual      = "annual"
     case installment = "installment"
 
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = (try? container.decode(String.self)) ?? RecurrenceType.none.rawValue
+        self = RecurrenceType(rawValue: rawValue) ?? .none
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
     var label: String {
         switch self {
         case .none:        return t("recurrence.none")

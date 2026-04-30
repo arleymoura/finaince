@@ -1327,11 +1327,11 @@ struct CSVImportReviewView: View {
         }
 
         guard importedCount > 0 else { return }
-
         // Show success banner and auto-dismiss after 3 s
-        let noun = importedCount == 1 ? "transação importada" : "transações importadas"
         withAnimation(.easeInOut(duration: 0.3)) {
-            importBanner = "\(importedCount) \(noun) e conciliada\(importedCount == 1 ? "" : "s")"
+            importBanner = importedCount == 1
+                ? t("import.banner.reconciledSingle", importedCount)
+                : t("import.banner.reconciledPlural", importedCount)
         }
         Task {
             try? await Task.sleep(for: .seconds(3))

@@ -4,6 +4,7 @@ import Charts
 
 struct DashboardView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.colorScheme) private var colorScheme
     @Query private var transactions: [Transaction]
     @Query(sort: \Account.createdAt) private var accounts: [Account]
     @Query(sort: \Category.sortOrder) private var categories: [Category]
@@ -31,11 +32,43 @@ struct DashboardView: View {
     @State private var selectedInsightForAnalysis: Insight?
     @State private var insightAnalysisSharePayload: DashboardInsightAnalysisSharePayload?
     @State private var isGeneratingInsightAnalysis = false
+    @State private var showMonthComparator = false
     @State private var deepLinkManager = DeepLinkManager.shared
     @State private var chatNavigationManager = ChatNavigationManager.shared
     @State private var helpTip: HelpTipItem? = nil
     @Environment(\.horizontalSizeClass) private var sizeClass
     private var isRegular: Bool { sizeClass == .regular }
+    private var dashboardCardCornerRadius: CGFloat { isRegular ? 20 : 16 }
+    private var dashboardCardFillColor: Color {
+        isRegular ? FinAInceColor.elevatedSurface : FinAInceColor.secondarySurface
+    }
+    private var regularHeroTopColor: Color {
+        colorScheme == .dark ? Color(red: 0.26, green: 0.19, blue: 0.58) : Color.accentColor.opacity(0.95)
+    }
+    private var regularHeroBottomColor: Color {
+        colorScheme == .dark ? Color(red: 0.12, green: 0.10, blue: 0.24) : Color.accentColor.opacity(0.68)
+    }
+    private var regularHeroGlassFill: Color {
+        colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.12)
+    }
+    private var regularHeroGlassBorder: Color {
+        colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.12)
+    }
+    private var compactHeroTopColor: Color {
+        colorScheme == .dark ? Color(red: 0.24, green: 0.18, blue: 0.54) : Color.accentColor.opacity(0.95)
+    }
+    private var compactHeroBottomColor: Color {
+        colorScheme == .dark ? Color(red: 0.11, green: 0.09, blue: 0.22) : Color.accentColor.opacity(0.65)
+    }
+    private var compactHeroGlassFill: Color {
+        colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.15)
+    }
+    private var compactHeroGlassSoftFill: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.20)
+    }
+    private var compactHeroGlassStrongFill: Color {
+        colorScheme == .dark ? Color.white.opacity(0.16) : Color.white.opacity(0.85)
+    }
 
     /// On iPad inside NavigationSplitView, the GeometryReader proxy.safeAreaInsets.top
     /// is inflated by the NavigationStack's navigation bar area. Read the real
@@ -57,6 +90,14 @@ struct DashboardView: View {
     @State private var cachedPendingAll: [Transaction] = []
     @State private var cachedPendingByDay: [Date: [Transaction]] = [:]
     @State private var cachedInsights: [Insight] = []
+    @State private var isInsightsLoading: Bool = true
+    @State private var insightsReloadToken = UUID()
+    @State private var insightsSkeletonPhase: CGFloat = -1.0
+    /// Drives the in-content ProgressView shown while the cache builds.
+    /// Stays `true` until the FIRST refreshDashboardData() finishes after
+    /// the tab transition completes — keeps the menu instant and parks
+    /// the heavy work behind a clear loading state.
+    @State private var isContentLoading: Bool = true
 
     private var cal: Calendar { Calendar.current }
 
@@ -70,23 +111,27 @@ struct DashboardView: View {
     var pendingTransactions: [Transaction] { cachedPendingAll }
     var activeGoals: [Goal]       { goals.filter { $0.isActive } }
     var activeProjects: [CostCenter] { costCenters.filter { $0.isActive } }
-    var activeAISettings: AISettings? { aiSettings.first(where: { $0.isConfigured }) }
+    var activeAISettings: AISettings? {
+        aiSettings.first(where: isUsableAIConfiguration(_:))
+        ?? aiSettings.first(where: { $0.isConfigured })
+    }
 
     var isAIConfigured: Bool {
         guard let settings = activeAISettings else { return false }
-        // Provedores sem API key (ex: Apple Intelligence): basta o usuário ter
-        // passado pelo Setup e escolhido o provedor — o card deve sumir.
-        // Se o device não suportar, o ChatView trata com mensagem específica.
-        guard settings.provider.requiresAPIKey else { return true }
-        // Provedores cloud: verifica se há chave real no Keychain.
-        let key = KeychainHelper.load(forKey: settings.provider.keychainKey) ?? ""
-        return !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return isUsableAIConfiguration(settings)
     }
 
     var aiConfigurationSignature: String {
         aiSettings
             .map { "\($0.provider.rawValue)|\($0.model)|\($0.isConfigured)" }
             .joined(separator: ";")
+    }
+
+    private func isUsableAIConfiguration(_ settings: AISettings) -> Bool {
+        guard settings.isConfigured else { return false }
+        guard settings.provider.requiresAPIKey else { return true }
+        let key = KeychainHelper.load(forKey: settings.provider.keychainKey) ?? ""
+        return !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var monthPendingTransactions: [Transaction] {
@@ -163,6 +208,16 @@ struct DashboardView: View {
         return fmt.string(from: date).capitalized
     }
 
+    var currentMonthReference: MonthReference {
+        MonthReference(year: selectedYear, month: selectedMonth)
+    }
+
+    var previousMonthReference: MonthReference {
+        let previousMonth = selectedMonth == 1 ? 12 : selectedMonth - 1
+        let previousYear = selectedMonth == 1 ? selectedYear - 1 : selectedYear
+        return MonthReference(year: previousYear, month: previousMonth)
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -189,11 +244,15 @@ struct DashboardView: View {
                                     .frame(maxWidth: .infinity)
                                     .padding(.top, 12)
                                     .padding(.bottom, 4)
-                                ScrollView {
-                                    iPadContentGrid
-                                        .padding(.bottom, 32)
+                                if isContentLoading {
+                                    contentLoadingView
+                                } else {
+                                    ScrollView {
+                                        iPadContentGrid
+                                            .padding(.bottom, 32)
+                                    }
+                                    .refreshable { refreshDashboardData() }
                                 }
-                                .refreshable { refreshDashboardData() }
                             }
                             .ignoresSafeArea(edges: .top)
                         }
@@ -216,11 +275,15 @@ struct DashboardView: View {
 
                                     Divider()
 
-                                    ScrollView {
-                                        iPhoneContentStack
-                                            .padding(.bottom, 32)
+                                    if isContentLoading {
+                                        contentLoadingView
+                                    } else {
+                                        ScrollView {
+                                            iPhoneContentStack
+                                                .padding(.bottom, 96)
+                                        }
+                                        .refreshable { refreshDashboardData() }
                                     }
-                                    .refreshable { refreshDashboardData() }
                                 }
                                 .padding(.top, -44)
                             }
@@ -231,7 +294,14 @@ struct DashboardView: View {
             .toolbar(.hidden, for: .navigationBar)
             // Rebuild derived data when month, account filter, transactions, or AI setup changes.
             .task(id: "\(selectedMonth)/\(selectedYear)/\(selectedAccountId?.uuidString ?? "all")") {
+                // Let the tab transition finish (and the spinner appear)
+                // BEFORE the heavy synchronous refresh blocks the main thread.
+                isContentLoading = true
+                try? await Task.sleep(nanoseconds: 50_000_000)
                 refreshDashboardData()
+                withAnimation(.easeOut(duration: 0.18)) {
+                    isContentLoading = false
+                }
             }
             .onChange(of: transactions) { _, _ in
                 refreshDashboardData()
@@ -253,6 +323,10 @@ struct DashboardView: View {
             }
             .sheet(isPresented: $showCSVImportEmpty) {
                 CSVImportInfoView()
+                    .presentationDetents([.fraction(0.82), .large])
+                    .presentationDragIndicator(.visible)
+                    .presentationCornerRadius(28)
+                    .presentationSizing(.page)
             }
             .onChange(of: deepLinkManager.pendingDeepLink) { _, deepLink in
                 handleDeepLink(deepLink)
@@ -262,12 +336,24 @@ struct DashboardView: View {
             }
             .sheet(isPresented: $showGoalForm) {
                 GoalFormView()
+                    .presentationDetents([.fraction(0.78), .large])
+                    .presentationDragIndicator(.visible)
+                    .presentationCornerRadius(28)
+                    .presentationSizing(.form)
             }
             .sheet(isPresented: $showNewProjectForm) {
                 NavigationStack { ProjectFormView() }
+                    .presentationDetents([.fraction(0.78), .large])
+                    .presentationDragIndicator(.visible)
+                    .presentationCornerRadius(28)
+                    .presentationSizing(.form)
             }
             .sheet(item: $selectedProject) { project in
                 NavigationStack { ProjectDetailView(project: project) }
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+                    .presentationCornerRadius(28)
+                    .presentationSizing(.page)
             }
             .sheet(isPresented: $showAISetup) {
                 NavigationStack {
@@ -326,12 +412,27 @@ struct DashboardView: View {
                 )
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
-                .presentationBackground(Color(.systemBackground))
+                .presentationBackground(FinAInceColor.primarySurface)
+            }
+            .sheet(isPresented: $showMonthComparator) {
+                MonthComparisonView(
+                    transactions: transactions,
+                    goals: goals,
+                    currencyCode: currencyCode,
+                    aiSettings: activeAISettings,
+                    selectedAccountId: selectedAccountId,
+                    initialMonthA: previousMonthReference,
+                    initialMonthB: currentMonthReference
+                )
+                .presentationDetents([.fraction(0.82), .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(28)
+                .presentationSizing(.page)
             }
             .overlay {
                 if isGeneratingInsightAnalysis {
                     ZStack {
-                        Color.black.opacity(0.2)
+                        FinAInceColor.primaryText.opacity(0.18)
                             .ignoresSafeArea()
 
                         VStack(spacing: 12) {
@@ -340,11 +441,10 @@ struct DashboardView: View {
 
                             Text(t("dashboard.generatingInsightAnalysis"))
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(FinAInceColor.secondaryText)
                         }
                         .padding(20)
-                        .background(.ultraThinMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .finElevatedSurface(cornerRadius: 16)
                     }
                 }
             }
@@ -354,43 +454,59 @@ struct DashboardView: View {
 
     // MARK: - Empty State (no transactions yet)
 
+    /// Centered ProgressView shown in the content area while the cache builds
+    /// after a tab switch / cold launch. The header stays visible above it.
+    private var contentLoadingView: some View {
+        VStack(spacing: 14) {
+            Spacer()
+            ProgressView()
+                .scaleEffect(1.2)
+            Text(t("common.loading"))
+                .font(.subheadline)
+                .foregroundStyle(FinAInceColor.secondaryText)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(dashboardWorkspaceBackground)
+    }
+
     private func dashboardEmptyState(topInset: CGFloat) -> some View {
         VStack(spacing: 0) {
 
             // ── Mini header strip ─────────────────────────────────────────
-            HStack(spacing: 12) {
-                Button { moveMonth(by: -1) } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.subheadline.bold())
-                        .foregroundStyle(.white.opacity(0.9))
-                        .frame(width: 34, height: 34)
-                        .background(.white.opacity(0.15))
-                        .clipShape(Circle())
-                }
-                Text(monthTitle)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .frame(maxWidth: .infinity)
-                Button { moveMonth(by: 1) } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.subheadline.bold())
-                        .foregroundStyle(.white.opacity(0.9))
-                        .frame(width: 34, height: 34)
-                        .background(.white.opacity(0.15))
-                        .clipShape(Circle())
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, topInset + 16)
-            .padding(.bottom, 20)
-            .background(
-                LinearGradient(
-                    colors: [Color.accentColor.opacity(0.95), Color.accentColor.opacity(0.65)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                )
-            )
-            .clipShape(UnevenRoundedRectangle(cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24)))
-            .shadow(color: Color.accentColor.opacity(0.24), radius: 12, x: 0, y: 6)
+//            HStack(spacing: 12) {
+//                Button { moveMonth(by: -1) } label: {
+//                    Image(systemName: "chevron.left")
+//                        .font(.subheadline.bold())
+//                        .foregroundStyle(.white.opacity(0.9))
+//                        .frame(width: 34, height: 34)
+//                        .background(.white.opacity(0.15))
+//                        .clipShape(Circle())
+//                }
+//                Text(monthTitle)
+//                    .font(.subheadline.weight(.semibold))
+//                    .foregroundStyle(.white.opacity(0.9))
+//                    .frame(maxWidth: .infinity)
+//                Button { moveMonth(by: 1) } label: {
+//                    Image(systemName: "chevron.right")
+//                        .font(.subheadline.bold())
+//                        .foregroundStyle(.white.opacity(0.9))
+//                        .frame(width: 34, height: 34)
+//                        .background(.white.opacity(0.15))
+//                        .clipShape(Circle())
+//                }
+//            }
+//            .padding(.horizontal, 20)
+//            .padding(.top, topInset + 16)
+//            .padding(.bottom, 20)
+//            .background(
+//                LinearGradient(
+//                    colors: [Color.accentColor.opacity(0.95), Color.accentColor.opacity(0.65)],
+//                    startPoint: .topLeading, endPoint: .bottomTrailing
+//                )
+//            )
+//            .clipShape(UnevenRoundedRectangle(cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24)))
+//            .shadow(color: Color.accentColor.opacity(0.24), radius: 12, x: 0, y: 6)
 
             // ── Headline ──────────────────────────────────────────────────
             VStack(spacing: 10) {
@@ -406,15 +522,16 @@ struct DashboardView: View {
 
                 Text(t("dashboard.emptyReadyTitle"))
                     .font(.title2.bold())
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(FinAInceColor.primaryText)
 
                 Text(t("dashboard.emptyReadyDesc"))
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FinAInceColor.secondaryText)
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
             }
             .padding(.bottom, 28)
+            .padding(.top, 28)
 
             // ── Missions ──────────────────────────────────────────────────
             VStack(spacing: 12) {
@@ -468,7 +585,7 @@ struct DashboardView: View {
                     }
                     Text(t("dashboard.importBankDesc"))
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                 }
                 Spacer()
             }
@@ -482,7 +599,7 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text(t("dashboard.howTo"))
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FinAInceColor.secondaryText)
                     .textCase(.uppercase)
                     .tracking(0.4)
 
@@ -496,11 +613,6 @@ struct DashboardView: View {
                     bankStep(icon: "arrow.down.circle.fill", label: "Abrir no\nfinAInce", accent: true)
                 }
                 .frame(maxWidth: .infinity)
-
-                Text(t("dashboard.supportedFormats"))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 2)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
@@ -525,11 +637,10 @@ struct DashboardView: View {
             }
             .buttonStyle(.plain)
         }
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .finElevatedSurface(cornerRadius: 16)
         .overlay(
             RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(Color.green.opacity(0.25), lineWidth: 1.5)
+                .strokeBorder(Color.green.opacity(0.22), lineWidth: 1.25)
         )
     }
 
@@ -581,7 +692,7 @@ struct DashboardView: View {
                     HStack(spacing: 6) {
                         Text(title)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(FinAInceColor.primaryText)
                         if let badge {
                             Text(badge)
                                 .font(.caption2.bold())
@@ -594,16 +705,15 @@ struct DashboardView: View {
                     }
                     Text(desc)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                 }
                 Spacer()
                 Image(systemName: "arrow.right")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FinAInceColor.secondaryText)
             }
             .padding(16)
-            .background(Color(.secondarySystemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .finElevatedSurface(cornerRadius: 16)
         }
         .buttonStyle(.plain)
     }
@@ -611,15 +721,29 @@ struct DashboardView: View {
     // MARK: - Deep Links
 
     private func handleDeepLink(_ deepLink: DeepLink?) {
-        guard case let .category(id) = deepLink else { return }
+        switch deepLink {
+        case let .category(id):
+            guard let category = categories.first(where: { matchesDeepLinkID(id, uuid: $0.id) }) else {
+                deepLinkManager.routeToHome()
+                return
+            }
 
-        guard let category = categories.first(where: { matchesDeepLinkID(id, uuid: $0.id) }) else {
-            deepLinkManager.routeToHome()
+            drilldownCategory = category
+            deepLinkManager.consume(.category(id: id))
+        case let .project(id):
+            guard let project = costCenters.first(where: { matchesDeepLinkID(id, uuid: $0.id) }) else {
+                deepLinkManager.routeToHome()
+                return
+            }
+
+            selectedProject = project
+            deepLinkManager.consume(.project(id: id))
+        case .monthComparison:
+            showMonthComparator = true
+            deepLinkManager.consume(.monthComparison)
+        default:
             return
         }
-
-        drilldownCategory = category
-        deepLinkManager.consume(.category(id: id))
     }
 
     private func matchesDeepLinkID(_ id: String, uuid: UUID) -> Bool {
@@ -632,13 +756,106 @@ struct DashboardView: View {
 
     @ViewBuilder
     private var insightsSection: some View {
-        if !cachedInsights.isEmpty {
-            InsightCarousel(
-                insights: cachedInsights,
-                badgeTitle: t("dashboard.quickAnalysisTitle"),
-                ctaTitle: t(isAIConfigured ? "dashboard.viewMoreDetails" : "dashboard.viewWithAI")
-            ) { insight in
-                handleInsightTap(insight)
+        ZStack {
+            if !cachedInsights.isEmpty {
+                InsightCarousel(
+                    insights: cachedInsights,
+                    badgeTitle: t("dashboard.quickAnalysisTitle"),
+                    ctaTitle: t(isAIConfigured ? "dashboard.viewMoreDetails" : "dashboard.viewWithAI")
+                ) { insight in
+                    handleInsightTap(insight)
+                }
+                .opacity(isInsightsLoading ? 0 : 1)
+            }
+
+            if isInsightsLoading {
+                insightsSkeletonCard
+                    .transition(.opacity)
+            }
+        }
+        .frame(height: 166)
+        .animation(.easeInOut(duration: 0.22), value: isInsightsLoading)
+    }
+
+    private var insightsSkeletonCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(Color.accentColor.opacity(0.12))
+                        .frame(width: 36, height: 36)
+
+                    Image(systemName: "sparkles")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(Color.accentColor)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("IA") //localizar
+                        .font(.caption2.bold())
+                        .foregroundStyle(Color.accentColor)
+                        .textCase(.uppercase)
+                        .tracking(0.5)
+                    Text(t("dashboard.insightsLoadingTitle"))
+                        .font(.subheadline.bold())
+                        .foregroundStyle(FinAInceColor.primaryText)
+
+                    Text(t("dashboard.insightsLoadingSubtitle"))
+                        .font(.caption)
+                        .foregroundStyle(FinAInceColor.secondaryText)
+                }
+
+                Spacer()
+
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.accentColor.opacity(0.14))
+                    .frame(width: 10, height: 10)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .frame(height: 11)
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .frame(height: 11)
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .frame(width: 210, height: 11)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, maxHeight: 140, alignment: .topLeading)
+        .background(Color.accentColor.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: isRegular ? 20 : 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: isRegular ? 20 : 16)
+                .strokeBorder(Color.accentColor.opacity(0.16), lineWidth: 1)
+        )
+        .overlay {
+            GeometryReader { proxy in
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.0),
+                        Color.white.opacity(0.55),
+                        Color.white.opacity(0.0)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(width: 120)
+                .rotationEffect(.degrees(14))
+                .offset(x: proxy.size.width * insightsSkeletonPhase)
+                .blendMode(.plusLighter)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: isRegular ? 20 : 16))
+            .allowsHitTesting(false)
+        }
+        .allowsHitTesting(false)
+        .onAppear {
+            insightsSkeletonPhase = -0.45
+            withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
+                insightsSkeletonPhase = 1.25
             }
         }
     }
@@ -720,11 +937,11 @@ struct DashboardView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(t("dashboard.aiSetupTitle"))
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(FinAInceColor.primaryText)
 
                         Text(t("dashboard.aiSetupDesc"))
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(FinAInceColor.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -739,8 +956,7 @@ struct DashboardView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
                 .padding(14)
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .finElevatedSurface(cornerRadius: 16)
                 .overlay(
                     RoundedRectangle(cornerRadius: 16)
                         .stroke(Color.accentColor.opacity(0.14), lineWidth: 1)
@@ -774,7 +990,7 @@ struct DashboardView: View {
                         .font(.subheadline.bold())
                         .foregroundStyle(.white.opacity(0.9))
                         .frame(width: 34, height: 34)
-                        .background(.white.opacity(0.15))
+                        .background(compactHeroGlassFill)
                         .clipShape(Circle())
                 }
                 Text(monthTitle)
@@ -786,7 +1002,7 @@ struct DashboardView: View {
                         .font(.subheadline.bold())
                         .foregroundStyle(.white.opacity(0.9))
                         .frame(width: 34, height: 34)
-                        .background(.white.opacity(0.15))
+                        .background(compactHeroGlassFill)
                         .clipShape(Circle())
                 }
             }
@@ -841,7 +1057,7 @@ struct DashboardView: View {
                     }
                 )
                 Rectangle()
-                    .fill(.white.opacity(0.25))
+                    .fill(compactHeroGlassSoftFill)
                     .frame(width: 1, height: 44)
                 heroStatItem(
                     label: t("dashboard.pending"),
@@ -857,18 +1073,17 @@ struct DashboardView: View {
                     }
                 )
             }
-            .padding(.bottom, 16)
+            .padding(.bottom, totalForecast > 0 ? 0 : 16)
 
-            // Progress bar
             if totalForecast > 0 {
                 VStack(spacing: 6) {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
                             RoundedRectangle(cornerRadius: 4)
-                                .fill(.white.opacity(0.2))
+                                .fill(compactHeroGlassSoftFill)
                                 .frame(height: 6)
                             RoundedRectangle(cornerRadius: 4)
-                                .fill(.white.opacity(0.85))
+                                .fill(compactHeroGlassStrongFill)
                                 .frame(
                                     width: geo.size.width * min(totalPaid / totalForecast, 1.0),
                                     height: 6
@@ -900,7 +1115,7 @@ struct DashboardView: View {
         // Gradient as background — never affects layout height.
         .background {
             LinearGradient(
-                colors: [Color.accentColor.opacity(0.95), Color.accentColor.opacity(0.65)],
+                colors: [compactHeroTopColor, compactHeroBottomColor],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -908,7 +1123,7 @@ struct DashboardView: View {
         .clipShape(
             UnevenRoundedRectangle(cornerRadii: .init(bottomLeading: 24, bottomTrailing: 24))
         )
-        .shadow(color: Color.accentColor.opacity(0.24), radius: 12, x: 0, y: 6)
+        .shadow(color: compactHeroBottomColor.opacity(colorScheme == .dark ? 0.30 : 0.24), radius: 12, x: 0, y: 6)
     }
 
     private func iPadHeroHeader(topInset: CGFloat) -> some View {
@@ -920,7 +1135,7 @@ struct DashboardView: View {
                         .foregroundStyle(.white)
                         .lineLimit(2)
 
-                    Text("Sua visao financeira de \(monthTitle.lowercased())")
+                    Text(t("dashboard.heroMonthSummary", monthTitle.lowercased()))
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.78))
                 }
@@ -928,16 +1143,32 @@ struct DashboardView: View {
                 Spacer(minLength: 16)
 
                 HStack(spacing: 12) {
+
+
+                    Button {
+                        showMonthComparator = true
+                    } label: {
+                        Label(t("dashboard.compareMonthButton"), systemImage: "chart.line.text.clipboard")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.95))
+                            .padding(.horizontal, 14)
+                            .frame(height: 38)
+                            .background(regularHeroGlassFill)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(t("dashboard.compareMonthButton"))
+
                     monthNavigationButton(systemName: "chevron.left") {
                         moveMonth(by: -1)
                     }
-
+                    
                     Text(monthTitle)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.95))
                         .padding(.horizontal, 14)
                         .frame(height: 38)
-                        .background(.white.opacity(0.12))
+                        .background(regularHeroGlassFill)
                         .clipShape(Capsule())
 
                     monthNavigationButton(systemName: "chevron.right") {
@@ -974,7 +1205,7 @@ struct DashboardView: View {
         .frame(maxWidth: .infinity)
         .background {
             LinearGradient(
-                colors: [Color.accentColor.opacity(0.95), Color.accentColor.opacity(0.68)],
+                colors: [regularHeroTopColor, regularHeroBottomColor],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -982,7 +1213,7 @@ struct DashboardView: View {
         .clipShape(
             UnevenRoundedRectangle(cornerRadii: .init(bottomLeading: 28, bottomTrailing: 28))
         )
-        .shadow(color: Color.accentColor.opacity(0.20), radius: 14, x: 0, y: 8)
+        .shadow(color: regularHeroBottomColor.opacity(colorScheme == .dark ? 0.28 : 0.20), radius: 14, x: 0, y: 8)
     }
 
     private func monthNavigationButton(systemName: String, action: @escaping () -> Void) -> some View {
@@ -991,7 +1222,7 @@ struct DashboardView: View {
                 .font(.subheadline.bold())
                 .foregroundStyle(.white.opacity(0.9))
                 .frame(width: 38, height: 38)
-                .background(.white.opacity(0.12))
+                .background(regularHeroGlassFill)
                 .clipShape(Circle())
         }
         .buttonStyle(.plain)
@@ -1018,11 +1249,11 @@ struct DashboardView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
-        .background(.white.opacity(0.12))
+        .background(regularHeroGlassFill)
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                .strokeBorder(regularHeroGlassBorder, lineWidth: 1)
         )
     }
 
@@ -1076,11 +1307,11 @@ struct DashboardView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(isRegular ? Color(.systemBackground) : Color.clear)
+                .fill(isRegular ? FinAInceColor.elevatedSurface : Color.clear)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(isRegular ? Color.primary.opacity(0.05) : Color.clear, lineWidth: 1)
+                .strokeBorder(isRegular ? FinAInceColor.borderSubtle : Color.clear, lineWidth: 1)
         )
         .shadow(color: isRegular ? Color.black.opacity(0.05) : .clear, radius: 14, y: 8)
         .padding(.horizontal, isRegular ? 24 : 0)
@@ -1104,14 +1335,14 @@ struct DashboardView: View {
             .padding(.horizontal, 13)
             .padding(.vertical, 7)
             .background(
-                isSelected ? Color.accentColor : Color(.secondarySystemBackground)
+                isSelected ? FinAInceColor.primaryActionBackground : FinAInceColor.secondarySurface
             )
-            .foregroundStyle(isSelected ? .white : .primary)
+            .foregroundStyle(isSelected ? FinAInceColor.primaryActionForeground : FinAInceColor.primaryText)
             .clipShape(Capsule())
             .overlay(
                 Capsule()
                     .strokeBorder(
-                        isSelected ? Color.clear : Color(.separator).opacity(0.4),
+                        isSelected ? Color.clear : FinAInceColor.borderStrong,
                         lineWidth: 1
                     )
             )
@@ -1137,12 +1368,12 @@ struct DashboardView: View {
                         .foregroundStyle(Color.green)
                     Text(t("dashboard.noUpcomingPending"))
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                     Spacer()
                 }
                 .padding(12)
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .finInsetSurface(cornerRadius: 14)
+                .finSurfaceBorder(FinAInceColor.borderSubtle, cornerRadius: 14)
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(upcomingPendingTransactions.enumerated()), id: \.element.id) { index, transaction in
@@ -1159,8 +1390,8 @@ struct DashboardView: View {
                     }
                 }
                 .padding(14)
-                .background(Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .finInsetSurface(cornerRadius: 14)
+                .finSurfaceBorder(FinAInceColor.borderSubtle, cornerRadius: 14)
             }
         }
     }
@@ -1190,10 +1421,8 @@ struct DashboardView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 14)
-            .background(
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(Color(.secondarySystemBackground))
-            )
+            .finInsetSurface(cornerRadius: 14)
+            .finSurfaceBorder(FinAInceColor.borderSubtle, cornerRadius: 14)
         }
     }
 
@@ -1297,7 +1526,7 @@ struct DashboardView: View {
     /// Rebuilds all derived State that depends on transactions / selected month / AI setup.
     private func refreshDashboardData() {
         refreshCache()
-        refreshInsightsCache()
+        scheduleInsightsRefresh()
     }
 
     private func refreshInsightsCache() {
@@ -1310,6 +1539,38 @@ struct DashboardView: View {
             currencyCode: currencyCode,
             selectedAccountId: selectedAccountId
         )
+    }
+
+    private func scheduleInsightsRefresh() {
+        let token = UUID()
+        insightsReloadToken = token
+        isInsightsLoading = true
+        cachedInsights = []
+        let scopedTransactions = transactions
+        let scopedAccounts = accounts
+        let scopedGoals = goals
+        let scopedMonth = selectedMonth
+        let scopedYear = selectedYear
+        let scopedCurrencyCode = currencyCode
+        let scopedAccountId = selectedAccountId
+
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.15) {
+            let computedInsights = InsightEngine.compute(
+                transactions: scopedTransactions,
+                accounts: scopedAccounts,
+                goals: scopedGoals,
+                month: scopedMonth,
+                year: scopedYear,
+                currencyCode: scopedCurrencyCode,
+                selectedAccountId: scopedAccountId
+            )
+
+            DispatchQueue.main.async {
+                guard token == insightsReloadToken else { return }
+                cachedInsights = computedInsights
+                isInsightsLoading = false
+            }
+        }
     }
 
     private func refreshCache() {
@@ -1365,15 +1626,19 @@ struct DashboardView: View {
     // MARK: - Layout: iPhone vs iPad
 
     /// Single-column layout for iPhone (and compact size class).
+    /// Uses eager VStack: pays the full render cost upfront (during the
+    /// 200ms pre-cache pause we wait in `.task(id:)`), but then scroll is
+    /// smooth — no per-section stall when new content enters the viewport.
     private var iPhoneContentStack: some View {
         VStack(spacing: 20) {
             insightsSection
             aiSetupCard
             calendarSection
-            monthEvolutionChartCard
-            goalsSection       
-            chartSection
+            goalsSection
             projectsSection
+            monthEvolutionChartCard
+            chartSection
+            
         }
         .padding(.horizontal)
     }
@@ -1426,7 +1691,7 @@ struct DashboardView: View {
                 } label: {
                     Text(t("dashboard.goals"))
                         .font(.headline)
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(FinAInceColor.primaryText)
                 }
                 .buttonStyle(.plain)
                 Spacer()
@@ -1475,13 +1740,11 @@ struct DashboardView: View {
                 }
             }
         }
-        .background(isRegular ? Color(.systemBackground) : Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: isRegular ? 20 : 16))
-        .overlay(
-            RoundedRectangle(cornerRadius: isRegular ? 20 : 16)
-                .strokeBorder(Color.primary.opacity(isRegular ? 0.05 : 0.03), lineWidth: 1)
-        )
-        .shadow(color: isRegular ? Color.black.opacity(0.05) : .clear, radius: 18, y: 10)
+        .modifier(DashboardCardModifier(
+            fillColor: dashboardCardFillColor,
+            cornerRadius: dashboardCardCornerRadius,
+            showsShadow: isRegular
+        ))
     }
 
     private func compactGoalColumns(for count: Int) -> [GridItem] {
@@ -1503,10 +1766,10 @@ struct DashboardView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(t("dashboard.firstGoal"))
                         .font(.subheadline.bold())
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(FinAInceColor.primaryText)
                     Text(t("dashboard.firstGoalDesc"))
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                 }
 
                 Spacer()
@@ -1558,7 +1821,7 @@ struct DashboardView: View {
                         } label: {
                             Text(t("dashboard.projects"))
                                 .font(.headline)
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(FinAInceColor.primaryText)
                         }
                         .buttonStyle(.plain)
                         Spacer()
@@ -1621,13 +1884,11 @@ struct DashboardView: View {
                         .padding(12)
                     }
                 }
-                .background(isRegular ? Color(.systemBackground) : Color(.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: isRegular ? 20 : 16))
-                .overlay(
-                    RoundedRectangle(cornerRadius: isRegular ? 20 : 16)
-                        .strokeBorder(Color.primary.opacity(isRegular ? 0.05 : 0.03), lineWidth: 1)
-                )
-                .shadow(color: isRegular ? Color.black.opacity(0.05) : .clear, radius: 18, y: 10)
+                .modifier(DashboardCardModifier(
+                    fillColor: dashboardCardFillColor,
+                    cornerRadius: dashboardCardCornerRadius,
+                    showsShadow: isRegular
+                ))
             }
         }
     }
@@ -1695,6 +1956,9 @@ struct DashboardView: View {
         let data = monthEvolutionChartData
         let currentMonthSeries = t("dashboard.currentMonthSeries")
         let previousMonthSeries = t("dashboard.previousMonthSeries")
+        let chartDayLabel = t("chart.day")
+        let chartTotalLabel = t("dashboard.total")
+        let chartSeriesLabel = t("chart.series")
         let currentPoints = data.filter { $0.series == currentMonthSeries }
         let previousPoints = data.filter { $0.series == previousMonthSeries }
         let currentTotal = currentPoints.last?.amount ?? 0
@@ -1733,17 +1997,17 @@ struct DashboardView: View {
 
             Chart(data) { point in
                 AreaMark(
-                    x: .value("Dia", point.day),
-                    y: .value("Total", point.amount)
+                    x: .value(chartDayLabel, point.day),
+                    y: .value(chartTotalLabel, point.amount)
                 )
-                .foregroundStyle(by: .value("Série", point.series))
+                .foregroundStyle(by: .value(chartSeriesLabel, point.series))
                 .opacity(0.12)
 
                 LineMark(
-                    x: .value("Dia", point.day),
-                    y: .value("Total", point.amount) //localizar
+                    x: .value(chartDayLabel, point.day),
+                    y: .value(chartTotalLabel, point.amount)
                 )
-                .foregroundStyle(by: .value("Série", point.series))
+                .foregroundStyle(by: .value(chartSeriesLabel, point.series))
                 .lineStyle(point.series == previousMonthSeries
                     ? StrokeStyle(lineWidth: 1.5, dash: [4, 3])
                     : StrokeStyle(lineWidth: 2.5))
@@ -1774,13 +2038,15 @@ struct DashboardView: View {
             .frame(height: 180)
         }
         .padding(16)
-        .background(isRegular ? Color(.systemBackground) : Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: isRegular ? 20 : 16))
-        .overlay(
-            RoundedRectangle(cornerRadius: isRegular ? 20 : 16)
-                .strokeBorder(Color.primary.opacity(isRegular ? 0.05 : 0.03), lineWidth: 1)
-        )
-        .shadow(color: isRegular ? Color.black.opacity(0.05) : .clear, radius: 18, y: 10)
+        .modifier(DashboardCardModifier(
+            fillColor: dashboardCardFillColor,
+            cornerRadius: dashboardCardCornerRadius,
+            showsShadow: isRegular
+        ))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            showMonthComparator = true
+        }
     }
 
     // MARK: - Accounts
@@ -1848,8 +2114,11 @@ struct DashboardView: View {
                 }
             }
         }
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .modifier(DashboardCardModifier(
+            fillColor: dashboardCardFillColor,
+            cornerRadius: dashboardCardCornerRadius,
+            showsShadow: isRegular
+        ))
     }
 
     // MARK: - Chart
@@ -1875,20 +2144,20 @@ struct DashboardView: View {
                 VStack(spacing: 2) {
                     Text(t("dashboard.total"))
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                     Text(0.0.asCurrency(currencyCode))
                         .font(.caption.bold())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                 }
             }
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(t("dashboard.noSpendingMonth"))
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(FinAInceColor.primaryText)
                 Text(t("dashboard.noSpendingMonthDesc"))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FinAInceColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1909,7 +2178,7 @@ struct DashboardView: View {
                 if !expensesByCategory.isEmpty {
                     Image(systemName: "chevron.up.forward")
                         .font(.caption.bold())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(FinAInceColor.secondaryText)
                 }
             }
             .padding(.horizontal, 16)
@@ -1938,7 +2207,7 @@ struct DashboardView: View {
                         VStack(spacing: 2) {
                             Text(t("dashboard.total"))
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(FinAInceColor.secondaryText)
                             Text(totalExpensesRealized.asCurrency(currencyCode))
                                 .font(.caption.bold())
                                 .minimumScaleFactor(0.5)
@@ -1960,13 +2229,13 @@ struct DashboardView: View {
                                 Spacer()
                                 Text("\(Int(totalExpensesRealized > 0 ? item.total / totalExpensesRealized * 100 : 0))%")
                                     .font(.caption.bold())
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(FinAInceColor.secondaryText)
                             }
                         }
                         if expensesByCategory.count > 5 {
                             Text(t("dashboard.moreCount", expensesByCategory.count - 5))
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(FinAInceColor.secondaryText)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1975,13 +2244,11 @@ struct DashboardView: View {
             }   // end VStack body
             .padding(16)
         }
-        .background(isRegular ? Color(.systemBackground) : Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: isRegular ? 20 : 16))
-        .overlay(
-            RoundedRectangle(cornerRadius: isRegular ? 20 : 16)
-                .strokeBorder(Color.primary.opacity(isRegular ? 0.05 : 0.03), lineWidth: 1)
-        )
-        .shadow(color: isRegular ? Color.black.opacity(0.05) : .clear, radius: 18, y: 10)
+        .modifier(DashboardCardModifier(
+            fillColor: dashboardCardFillColor,
+            cornerRadius: dashboardCardCornerRadius,
+            showsShadow: isRegular
+        ))
         .contentShape(Rectangle())
         .onTapGesture {
             guard !expensesByCategory.isEmpty else { return }
@@ -1990,22 +2257,26 @@ struct DashboardView: View {
     }
 
     private var dashboardWorkspaceBackground: some View {
-        Group {
-            if isRegular {
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.96, green: 0.97, blue: 0.99),
-                        Color(red: 0.94, green: 0.95, blue: 0.97)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            } else {
-                Color(.systemGroupedBackground)
-            }
-        }
+        WorkspaceBackground(isRegularLayout: isRegular)
     }
 
+}
+
+private struct DashboardCardModifier: ViewModifier {
+    let fillColor: Color
+    let cornerRadius: CGFloat
+    let showsShadow: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .background(fillColor)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(FinAInceColor.borderSubtle, lineWidth: 1)
+            )
+            .shadow(color: showsShadow ? Color.black.opacity(0.05) : .clear, radius: 18, y: 10)
+    }
 }
 
 private struct DashboardCumulativePoint: Identifiable {
@@ -2062,19 +2333,19 @@ private struct UpcomingExpenseRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(transaction.placeName ?? transaction.category?.displayName ?? t("dashboard.pending"))
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(FinAInceColor.primaryText)
                     .lineLimit(1)
 
                 Text(dateText.capitalized)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FinAInceColor.secondaryText)
             }
 
             Spacer()
 
             Text(transaction.amount.asCurrency(currencyCode))
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(FinAInceColor.primaryText)
                 .lineLimit(1)
         }
         .padding(.vertical, 8)
@@ -2108,7 +2379,7 @@ private struct PendingDayTransactionsSheet: View {
                                 .font(.headline)
                             Text(t(transactions.count == 1 ? "dashboard.pendingExpenseSingular" : "dashboard.pendingExpensePlural", transactions.count))
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(FinAInceColor.secondaryText)
                         }
 
                         Spacer()
@@ -2157,20 +2428,20 @@ private struct CategoryDetailsSheet: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(.systemGroupedBackground)
+                FinAInceColor.groupedBackground
                     .ignoresSafeArea()
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
                         Text(t("dashboard.detail"))
                             .font(.title3.bold())
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(FinAInceColor.primaryText)
                             .padding(.horizontal)
                             .padding(.top, 8)
 
                         Text(t("dashboard.categoryTapHint"))
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(FinAInceColor.secondaryText)
                             .padding(.horizontal)
 
                         VStack(spacing: 0) {
@@ -2191,8 +2462,7 @@ private struct CategoryDetailsSheet: View {
                             }
                         }
                         .padding(16)
-                        .background(Color(.systemBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .finElevatedSurface(cornerRadius: 14)
                         .padding(.horizontal)
                     }
                     .padding(.vertical, 12)
@@ -2200,7 +2470,7 @@ private struct CategoryDetailsSheet: View {
             }
             .navigationTitle(t("dashboard.byCategory"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color(.systemBackground), for: .navigationBar)
+            .toolbarBackground(FinAInceColor.primarySurface, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -2302,7 +2572,7 @@ struct AccountExpenseBlock: View {
                         HStack(spacing: 6) {
                             Text(account.name)
                                 .font(.subheadline.bold())
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(FinAInceColor.primaryText)
                             if account.isDefault {
                                 Text(t("common.default"))
                                     .font(.caption2.bold())
@@ -2314,7 +2584,7 @@ struct AccountExpenseBlock: View {
                         }
                         Text(account.type.label)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(FinAInceColor.secondaryText)
                     }
 
                     Spacer()
@@ -2323,10 +2593,10 @@ struct AccountExpenseBlock: View {
                     HStack(spacing: 6) {
                         Text(total.asCurrency(currencyCode))
                             .font(.subheadline.bold())
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(FinAInceColor.primaryText)
                         Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                             .font(.caption.bold())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(FinAInceColor.secondaryText)
                     }
                 }
                 .padding(14)
@@ -2344,14 +2614,14 @@ struct AccountExpenseBlock: View {
                             HStack {
                                 Image(systemName: "calendar")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(FinAInceColor.secondaryText)
                                 Text(t(
                                     "dashboard.invoiceWindow",
                                     billing.start.formatted(.dateTime.day().month(.abbreviated)),
                                     billing.end.formatted(.dateTime.day().month(.abbreviated))
                                 ))
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(FinAInceColor.secondaryText)
                                 Spacer()
                             }
                             .padding(.horizontal, 14)
@@ -2394,7 +2664,7 @@ struct AccountExpenseBlock: View {
                         HStack {
                             Text(t("dashboard.percentDoneValue", Int(paid / progressTotal * 100)))
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(FinAInceColor.secondaryText)
                             Spacer()
                             if goalsForecast > 0 {
                                 HStack(spacing: 3) {
@@ -2403,7 +2673,7 @@ struct AccountExpenseBlock: View {
                                     Text(goalsForecast.asCurrency(currencyCode))
                                         .font(.caption2)
                                 }
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(FinAInceColor.secondaryText)
                             }
                         }
                         .padding(.horizontal, 14)
@@ -2420,7 +2690,7 @@ struct AccountExpenseBlock: View {
         VStack(spacing: 3) {
             Text(label)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(FinAInceColor.secondaryText)
             Text(amount.asCurrency(currencyCode))
                 .font(.caption.bold())
                 .foregroundStyle(color)
@@ -2457,11 +2727,11 @@ struct CategoryRowView: View {
                 HStack {
                     Text(category.displayName)
                         .font(.headline)
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(FinAInceColor.primaryText)
                     Spacer()
                     Text(amount.asCurrency(currencyCode))
                         .font(.headline.bold())
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(FinAInceColor.primaryText)
                 }
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
@@ -2476,7 +2746,7 @@ struct CategoryRowView: View {
                 .frame(height: 6)
                 Text(t("dashboard.percentOfSpendingValue", Int(percentage * 100)))
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FinAInceColor.secondaryText)
             }
         }
         .padding(.vertical, 10)
@@ -2504,18 +2774,18 @@ struct MonthSelectorView: View {
             Button { move(by: -1) } label: {
                 Image(systemName: "chevron.left")
                     .font(.subheadline.bold())
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(FinAInceColor.primaryText)
                     .frame(width: 36, height: 36)
-                    .background(Color(.secondarySystemBackground))
+                    .background(FinAInceColor.secondarySurface)
                     .clipShape(Circle())
             }
             Text(title).font(.headline).frame(maxWidth: .infinity)
             Button { move(by: 1) } label: {
                 Image(systemName: "chevron.right")
                     .font(.subheadline.bold())
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(FinAInceColor.primaryText)
                     .frame(width: 36, height: 36)
-                    .background(Color(.secondarySystemBackground))
+                    .background(FinAInceColor.secondarySurface)
                     .clipShape(Circle())
             }
         }
@@ -2583,23 +2853,22 @@ private struct DashboardInsightAnalysisEducationDialog: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text(t("dashboard.quickAnalysisTitle"))
                             .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(FinAInceColor.secondaryText)
                             .textCase(.uppercase)
                             .tracking(0.5)
 
                         VStack(alignment: .leading, spacing: 8) {
                             Text(insight.title)
                                 .font(.headline)
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(FinAInceColor.primaryText)
                             Text(insight.body)
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(FinAInceColor.secondaryText)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(16)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(.secondarySystemBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .finInsetSurface(cornerRadius: 14)
                     }
 
                     VStack(spacing: 0) {
@@ -2625,7 +2894,7 @@ private struct DashboardInsightAnalysisEducationDialog: View {
                         Button(action: onCancel) {
                             Text(t("common.cancel"))
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(FinAInceColor.secondaryText)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 8)
                         }
@@ -2635,7 +2904,7 @@ private struct DashboardInsightAnalysisEducationDialog: View {
                 .padding(20)
             }
         }
-        .background(Color(.systemBackground))
+        .background(FinAInceColor.primarySurface)
     }
 
     private func dashboardInsightStepRow(icon: String, text: String) -> some View {
@@ -2650,7 +2919,7 @@ private struct DashboardInsightAnalysisEducationDialog: View {
             }
             Text(text)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(FinAInceColor.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
         }
@@ -2703,7 +2972,7 @@ private struct DashboardProjectRow: View {
                     if !metaLabel.isEmpty {
                         Text(metaLabel)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(FinAInceColor.secondaryText)
                     }
                 }
 
@@ -2712,7 +2981,7 @@ private struct DashboardProjectRow: View {
                 // Spent
                 Text(spent.asCurrency(currencyCode))
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(FinAInceColor.primaryText)
             }
 
             // Budget progress bar — only when budget is set
@@ -2762,7 +3031,7 @@ private struct DashboardProjectCell: View {
                     .multilineTextAlignment(.center)
                 Text(spent.asCurrency(currencyCode))
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FinAInceColor.secondaryText)
                 if !metaLabel.isEmpty {
                     Text(metaLabel)
                         .font(.caption2)
@@ -2779,8 +3048,7 @@ private struct DashboardProjectCell: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
         .padding(.horizontal, 6)
-        .background(Color(.tertiarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .finInsetSurface(cornerRadius: 12)
     }
 }
 

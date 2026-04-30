@@ -39,21 +39,27 @@ struct CategoryFormView: View {
             Form {
                 // ── Preview ────────────────────────────────────────────────
                 Section {
-                    HStack {
-                        Spacer()
-                        VStack(spacing: 12) {
-                            Image(systemName: icon)
-                                .font(.system(size: 36))
-                                .foregroundStyle(.white)
-                                .frame(width: 72, height: 72)
-                                .background(Color(hex: effectiveColor))
-                                .clipShape(Circle())
-                            Text(name.isEmpty ? t("category.namePlaceholder") : name)
-                                .font(.headline)
-                                .foregroundStyle(name.isEmpty ? .secondary : .primary)
+                    Button {
+                        showSymbolPicker = true
+                    } label: {
+                        HStack {
+                            Spacer()
+                            VStack(spacing: 12) {
+                                Image(systemName: icon)
+                                    .font(.system(size: 36))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 72, height: 72)
+                                    .background(Color(hex: effectiveColor))
+                                    .clipShape(Circle())
+                                Text(name.isEmpty ? t("category.namePlaceholder") : name)
+                                    .font(.headline)
+                                    .foregroundStyle(name.isEmpty ? .secondary : .primary)
+                            }
+                            Spacer()
                         }
-                        Spacer()
                     }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
                     .padding(.vertical, 8)
                 }
                 .listRowBackground(Color.clear)
@@ -85,6 +91,8 @@ struct CategoryFormView: View {
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }

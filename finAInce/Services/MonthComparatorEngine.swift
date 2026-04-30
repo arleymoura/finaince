@@ -32,6 +32,8 @@ enum MonthComparisonTrend: String, Codable {
 struct MonthComparisonSummary: Codable {
     let totalA: Double
     let totalB: Double
+    let goalTotalA: Double
+    let goalTotalB: Double
     let difference: Double
     let percentageChange: Double
 }
@@ -41,6 +43,8 @@ struct MonthComparisonCategory: Codable, Identifiable {
     let name: String
     let totalA: Double
     let totalB: Double
+    let goalA: Double?
+    let goalB: Double?
     let difference: Double
     let percentageChange: Double
     let trend: MonthComparisonTrend
@@ -118,6 +122,7 @@ struct MonthComparisonExportTransaction: Codable, Identifiable {
 enum MonthComparatorEngine {
     static func compare(
         transactions: [Transaction],
+        goals: [Goal] = [],
         monthA: MonthReference,
         monthB: MonthReference,
         selectedAccountId: UUID? = nil,
@@ -136,18 +141,27 @@ enum MonthComparatorEngine {
             calendar: calendar
         )
 
-        let totalA = expensesA.reduce(0) { $0 + $1.amount }
-        let totalB = expensesB.reduce(0) { $0 + $1.amount }
-        let difference = totalB - totalA
+        let actualTotalA = expensesA.reduce(0) { $0 + $1.amount }
+        let actualTotalB = expensesB.reduce(0) { $0 + $1.amount }
+        let goalTotalA = totalGoalAmount(from: goals)
+        let goalTotalB = totalGoalAmount(from: goals)
+        let isFutureMonthA = isFutureMonth(monthA, calendar: calendar)
+        let isFutureMonthB = isFutureMonth(monthB, calendar: calendar)
 
-        let categoryTotalsA = groupedCategoryTotals(from: expensesA)
-        let categoryTotalsB = groupedCategoryTotals(from: expensesB)
-        let categoryNames = Set(categoryTotalsA.keys).union(categoryTotalsB.keys)
+        let rawCategoryTotalsA = groupedCategoryTotals(from: expensesA)
+        let rawCategoryTotalsB = groupedCategoryTotals(from: expensesB)
+        let categoryGoals = groupedCategoryGoals(from: goals)
+        let categoryNames = Set(rawCategoryTotalsA.keys)
+            .union(rawCategoryTotalsB.keys)
+            .union(categoryGoals.keys)
 
         let categories = categoryNames
             .map { name -> MonthComparisonCategory in
-                let totalA = categoryTotalsA[name] ?? 0
-                let totalB = categoryTotalsB[name] ?? 0
+                let actualA = rawCategoryTotalsA[name] ?? 0
+                let actualB = rawCategoryTotalsB[name] ?? 0
+                let goal = categoryGoals[name] ?? 0
+                let totalA = comparableAmount(actual: actualA, goal: goal, useGoalForecast: isFutureMonthA)
+                let totalB = comparableAmount(actual: actualB, goal: goal, useGoalForecast: isFutureMonthB)
                 let difference = totalB - totalA
                 let percentageChange = percentageChange(base: totalA, comparison: totalB)
                 return MonthComparisonCategory(
@@ -155,6 +169,8 @@ enum MonthComparatorEngine {
                     name: name,
                     totalA: totalA,
                     totalB: totalB,
+                    goalA: goal > 0 ? goal : nil,
+                    goalB: goal > 0 ? goal : nil,
                     difference: difference,
                     percentageChange: percentageChange,
                     trend: trend(for: difference, percentageChange: percentageChange, totalA: totalA, totalB: totalB)
@@ -195,9 +211,15 @@ enum MonthComparatorEngine {
                 .map(makeHighlightItem)
         )
 
+        let totalA = categories.reduce(0) { $0 + $1.totalA }
+        let totalB = categories.reduce(0) { $0 + $1.totalB }
+        let comparableGoalTotalA = comparableAmount(actual: actualTotalA, goal: goalTotalA, useGoalForecast: isFutureMonthA)
+        let comparableGoalTotalB = comparableAmount(actual: actualTotalB, goal: goalTotalB, useGoalForecast: isFutureMonthB)
+        let difference = totalB - totalA
+
         let behavior = MonthComparisonBehavior(
-            avgDailyA: averageDailySpending(total: totalA, month: monthA, calendar: calendar),
-            avgDailyB: averageDailySpending(total: totalB, month: monthB, calendar: calendar),
+            avgDailyA: averageDailySpending(total: actualTotalA, month: monthA, calendar: calendar),
+            avgDailyB: averageDailySpending(total: actualTotalB, month: monthB, calendar: calendar),
             peakDayA: peakDay(for: expensesA, month: monthA, calendar: calendar),
             peakDayB: peakDay(for: expensesB, month: monthB, calendar: calendar),
             distributionA: spendingDistribution(for: expensesA, calendar: calendar),
@@ -210,6 +232,8 @@ enum MonthComparatorEngine {
             summary: MonthComparisonSummary(
                 totalA: totalA,
                 totalB: totalB,
+                goalTotalA: comparableGoalTotalA,
+                goalTotalB: comparableGoalTotalB,
                 difference: difference,
                 percentageChange: percentageChange(base: totalA, comparison: totalB)
             ),
@@ -273,6 +297,34 @@ enum MonthComparatorEngine {
         }
     }
 
+    private static func groupedCategoryGoals(from goals: [Goal]) -> [String: Double] {
+        goals
+            .filter(\.isActive)
+            .reduce(into: [:]) { partialResult, goal in
+                guard let category = goal.category?.rootCategory ?? goal.category else { return }
+                partialResult[category.displayName, default: 0] += goal.targetAmount
+            }
+    }
+
+    private static func totalGoalAmount(from goals: [Goal]) -> Double {
+        goals
+            .filter(\.isActive)
+            .reduce(0) { $0 + $1.targetAmount }
+    }
+
+    private static func comparableAmount(actual: Double, goal: Double, useGoalForecast: Bool) -> Double {
+        guard useGoalForecast else { return actual }
+        return max(actual, goal)
+    }
+
+    private static func isFutureMonth(_ month: MonthReference, calendar: Calendar) -> Bool {
+        let nowComponents = calendar.dateComponents([.year, .month], from: Date())
+        guard let year = nowComponents.year, let currentMonth = nowComponents.month else {
+            return false
+        }
+        return month > MonthReference(year: year, month: currentMonth)
+    }
+
     private static func categoryName(for transaction: Transaction) -> String {
         if let category = transaction.category?.rootCategory ?? transaction.category {
             return category.displayName
@@ -301,7 +353,7 @@ enum MonthComparatorEngine {
         return difference > 0 ? .increase : .decrease
     }
 
-    private static func makeHighlightItem(from category: MonthComparisonCategory) -> MonthComparisonHighlightItem {
+    private nonisolated static func makeHighlightItem(from category: MonthComparisonCategory) -> MonthComparisonHighlightItem {
         MonthComparisonHighlightItem(
             id: category.id,
             name: category.name,

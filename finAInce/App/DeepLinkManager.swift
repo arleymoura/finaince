@@ -4,9 +4,19 @@ import Foundation
 
 enum DeepLink: Equatable {
     case home
+    case transactions
+    case transactionsCategory(id: String)
+    case chat
+    case search
+    case profile
+    case settings
     case transaction(id: String)
     case category(id: String)
     case goal(id: String)
+    case project(id: String)
+    case account(id: String)
+    case analysis
+    case monthComparison
 }
 
 @Observable final class DeepLinkManager {
@@ -38,11 +48,19 @@ enum DeepLink: Equatable {
         let host = url.host?.lowercased()
         let pathComponents = url.pathComponents.filter { $0 != "/" }
 
-        if host == "home" || pathComponents.first?.lowercased() == "home" {
-            return .home
+        if let staticLink = staticDeepLink(for: host ?? pathComponents.first?.lowercased()) {
+            return staticLink
         }
 
-        if let host, ["transaction", "category", "goal"].contains(host) {
+        if host == "transactions",
+           pathComponents.count >= 2,
+           pathComponents[0].lowercased() == "category" {
+            let id = pathComponents[1]
+            guard !id.isEmpty else { return nil }
+            return .transactionsCategory(id: id)
+        }
+
+        if let host, ["transaction", "category", "goal", "project", "account"].contains(host) {
             guard let id = pathComponents.first, !id.isEmpty else { return nil }
             return deepLink(kind: host, id: id)
         }
@@ -58,7 +76,32 @@ enum DeepLink: Equatable {
         case "transaction": return .transaction(id: id)
         case "category": return .category(id: id)
         case "goal": return .goal(id: id)
+        case "project": return .project(id: id)
+        case "account": return .account(id: id)
         default: return nil
+        }
+    }
+
+    private static func staticDeepLink(for kind: String?) -> DeepLink? {
+        switch kind {
+        case "home":
+            return .home
+        case "transactions":
+            return .transactions
+        case "chat":
+            return .chat
+        case "search":
+            return .search
+        case "profile":
+            return .profile
+        case "settings":
+            return .settings
+        case "analysis":
+            return .analysis
+        case "month-comparison", "monthcomparison":
+            return .monthComparison
+        default:
+            return nil
         }
     }
 }
