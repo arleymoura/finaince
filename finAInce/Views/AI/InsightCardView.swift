@@ -1,13 +1,27 @@
 import SwiftUI
 import Combine
 
+enum DashboardSignalSource {
+    case insight(Insight)
+    case opportunity(SavingsOpportunity)
+}
+
+struct DashboardSignalCardItem: Identifiable {
+    let id: UUID
+    let icon: String
+    let color: Color
+    let badgeTitle: String
+    let title: String
+    let body: String
+    let ctaTitle: String
+    let source: DashboardSignalSource
+}
+
 // MARK: - InsightCard
 
 /// Single insight card displayed in the carousel.
 struct InsightCard: View {
-    let insight: Insight
-    let badgeTitle: String
-    let ctaTitle: String
+    let item: DashboardSignalCardItem
     let onTap: () -> Void
 
     var body: some View {
@@ -18,23 +32,23 @@ struct InsightCard: View {
                 HStack(spacing: 10) {
                     ZStack {
                         Circle()
-                            .fill(insight.color.opacity(0.12))
+                            .fill(item.color.opacity(0.12))
                             .frame(width: 36, height: 36)
-                        Image(systemName: insight.icon)
+                        Image(systemName: item.icon)
                             .font(.subheadline.bold())
-                            .foregroundStyle(insight.color)
+                            .foregroundStyle(item.color)
                     }
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(badgeTitle)
+                        Text(item.badgeTitle)
                             .font(.caption2.bold())
-                            .foregroundStyle(insight.color)
+                            .foregroundStyle(item.color)
                             .textCase(.uppercase)
                             .tracking(0.5)
-                        Text(insight.title)
+                        Text(item.title)
                             .font(.subheadline.bold())
                             .foregroundStyle(FinAInceColor.primaryText)
-                            .lineLimit(1)
+                            .lineLimit(2)
                     }
 
                     Spacer()
@@ -45,7 +59,7 @@ struct InsightCard: View {
                 }
 
                 // Body
-                Text(insight.body)
+                Text(item.body)
                     .font(.caption)
                     .foregroundStyle(FinAInceColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -55,21 +69,21 @@ struct InsightCard: View {
                 HStack(spacing: 4) {
                     Image(systemName: "sparkles")
                         .font(.caption2.bold())
-                    Text(ctaTitle)
+                    Text(item.ctaTitle)
                         .font(.caption.bold())
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
-                .background(insight.color)
+                .background(item.color)
                 .foregroundStyle(.white)
                 .clipShape(Capsule())
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(FinAInceColor.tintSurface, in: RoundedRectangle(cornerRadius: 16))
+            .background(item.color.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
-                    .stroke(FinAInceColor.borderSubtle, lineWidth: 1)
+                    .stroke(item.color.opacity(0.18), lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
@@ -80,10 +94,8 @@ struct InsightCard: View {
 
 /// Horizontally-paging carousel with dot indicator and auto-advance.
 struct InsightCarousel: View {
-    let insights: [Insight]
-    let badgeTitle: String
-    let ctaTitle: String
-    let onTap: (Insight) -> Void
+    let items: [DashboardSignalCardItem]
+    let onTap: (DashboardSignalCardItem) -> Void
 
     @State private var currentIndex = 0
     @State private var isVisible = false
@@ -109,16 +121,14 @@ struct InsightCarousel: View {
 //                }
 //            }
 
-            if !insights.isEmpty {
+            if !items.isEmpty {
                 // Paged cards
                 TabView(selection: $currentIndex) {
-                    ForEach(Array(insights.enumerated()), id: \.offset) { idx, insight in
+                    ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
                         InsightCard(
-                            insight: insight,
-                            badgeTitle: badgeTitle,
-                            ctaTitle: ctaTitle
+                            item: item
                         ) {
-                            onTap(insight)
+                            onTap(item)
                         }
                             .tag(idx)
                             .padding(.horizontal, 1)   // avoid clipping shadow
@@ -126,7 +136,7 @@ struct InsightCarousel: View {
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .frame(height: 140)
-                .onChange(of: insights.count) { _, count in
+                .onChange(of: items.count) { _, count in
                     guard count > 0 else {
                         currentIndex = 0
                         return
@@ -137,13 +147,13 @@ struct InsightCarousel: View {
                     }
                 }
                 .onReceive(timer) { _ in
-                    guard isVisible, insights.count > 1 else { return }
+                    guard isVisible, items.count > 1 else { return }
 
-                    if currentIndex >= insights.count {
+                    if currentIndex >= items.count {
                         currentIndex = 0
                     } else {
                         withAnimation(.easeInOut(duration: 0.35)) {
-                            currentIndex = (currentIndex + 1) % insights.count
+                            currentIndex = (currentIndex + 1) % items.count
                         }
                     }
                 }
@@ -152,9 +162,9 @@ struct InsightCarousel: View {
             }
 
             // Page dots
-            if insights.count > 1 {
+            if items.count > 1 {
                 HStack(spacing: 5) {
-                    ForEach(0..<insights.count, id: \.self) { i in
+                    ForEach(0..<items.count, id: \.self) { i in
                         Capsule()
                             .fill(i == currentIndex
                                   ? Color.accentColor

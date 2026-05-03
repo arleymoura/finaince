@@ -11,6 +11,380 @@ enum RecurrenceEditScope {
     case all
 }
 
+private struct ExistingCashExpensePickerSheet: View {
+    let withdrawal: Transaction
+    let currencyCode: String
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \Transaction.date, order: .reverse) private var allTransactions: [Transaction]
+
+    @State private var selectedMonth: Date
+    @State private var isSearching = false
+    @State private var searchText = ""
+
+    init(withdrawal: Transaction, currencyCode: String) {
+        self.withdrawal = withdrawal
+        self.currencyCode = currencyCode
+        let calendar = Calendar.current
+        let monthStart = calendar.dateInterval(of: .month, for: withdrawal.date)?.start ?? withdrawal.date
+        _selectedMonth = State(initialValue: monthStart)
+    }
+
+    private var sortedExpenses: [Transaction] {
+        eligibleExpenses.sorted { lhs, rhs in
+            if lhs.date == rhs.date { return lhs.amount > rhs.amount }
+            return lhs.date > rhs.date
+        }
+    }
+
+    private var eligibleExpenses: [Transaction] {
+        allTransactions.filter { candidate in
+            guard candidate.id != withdrawal.id else { return false }
+            guard candidate.type == .expense else { return false }
+            guard candidate.account?.type == .cash else { return false }
+            guard candidate.parentCashWithdrawal == nil || candidate.parentCashWithdrawal?.id == withdrawal.id else { return false }
+
+            guard matchesDateFilter(candidate.date) else { return false }
+
+            let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedSearch.isEmpty else { return true }
+
+            let normalizedQuery = trimmedSearch.normalizedForMatching()
+            let merchant = candidate.placeName?.normalizedForMatching() ?? ""
+            let category = candidate.category?.displayName.normalizedForMatching() ?? ""
+            let subcategory = candidate.subcategory?.displayName.normalizedForMatching() ?? ""
+            let notes = candidate.notes?.normalizedForMatching() ?? ""
+            return merchant.contains(normalizedQuery)
+                || category.contains(normalizedQuery)
+                || subcategory.contains(normalizedQuery)
+                || notes.contains(normalizedQuery)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(t("transaction.cashAssociationSheetInfo"))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                        HStack {
+                            Text(t("transaction.cashAllocated"))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(withdrawal.allocatedCashAmount.asCurrency(currencyCode))
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.orange)
+                        }
+
+                        HStack {
+                            Text(t("transaction.cashRemaining"))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(withdrawal.remainingCashAmount.asCurrency(currencyCode))
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(withdrawal.remainingCashAmount > 0.009 ? .blue : .green)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Section {
+                    monthNavigator
+                }
+
+                if isSearching {
+                    Section {
+                        TextField(t("transaction.searchCashExpenses"), text: $searchText)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        Text(t("transaction.cashSearchUpToNextMonth"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Section(t("transaction.cashAssociationAvailable")) {
+                    if sortedExpenses.isEmpty {
+                        Text(t("transaction.cashAssociationNoEligible"))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(sortedExpenses) { expense in
+                            associationRow(for: expense, isAssociated: expense.parentCashWithdrawal?.id == withdrawal.id)
+                        }
+                    }
+                }
+            }
+            .navigationTitle(t("transaction.associateExistingCashExpense"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(t("common.close")) { dismiss() }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button(t("common.search")) {
+                        isSearching.toggle()
+                        if !isSearching {
+                            searchText = ""
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var monthNavigator: some View {
+        let locale = LanguageManager.shared.effective.locale
+
+        return HStack(spacing: 12) {
+            Button {
+                changeMonth(by: -1)
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            VStack(spacing: 4) {
+                Text(selectedMonth.formatted(.dateTime.month(.wide).year().locale(locale)))
+                    .font(.headline)
+                Text(isSearching ? t("transaction.cashSearchUpToNextMonth") : t("transaction.cashMonthFilter"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button {
+                changeMonth(by: 1)
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.plain)
+            .disabled(isNextMonthOrLater(selectedMonth))
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func matchesDateFilter(_ date: Date) -> Bool {
+        let calendar = Calendar.current
+
+        if !isSearching {
+            guard let interval = calendar.dateInterval(of: .month, for: selectedMonth) else { return false }
+            return interval.contains(date)
+        }
+
+        guard let start = calendar.dateInterval(of: .month, for: withdrawal.date)?.start else { return false }
+        guard
+            let nextMonth = calendar.date(byAdding: .month, value: 1, to: start),
+            let end = calendar.dateInterval(of: .month, for: nextMonth)?.end
+        else { return false }
+
+        return date >= start && date < end
+    }
+
+    private func changeMonth(by delta: Int) {
+        let calendar = Calendar.current
+        guard let updated = calendar.date(byAdding: .month, value: delta, to: selectedMonth) else { return }
+        selectedMonth = calendar.dateInterval(of: .month, for: updated)?.start ?? updated
+    }
+
+    private func isNextMonthOrLater(_ month: Date) -> Bool {
+        let calendar = Calendar.current
+        guard let currentMonthStart = calendar.dateInterval(of: .month, for: Date())?.start else { return false }
+        return month >= currentMonthStart
+    }
+
+    @ViewBuilder
+    private func associationRow(for expense: Transaction, isAssociated: Bool) -> some View {
+        let canAssociate = isAssociated || expense.amount <= withdrawal.remainingCashAmount + 0.009
+
+        Button {
+            toggleAssociation(for: expense, isAssociated: isAssociated)
+            if !isAssociated {
+                dismiss()
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: isAssociated ? "checkmark.circle.fill" : (canAssociate ? "circle" : "exclamationmark.circle"))
+                    .foregroundStyle(isAssociated ? .green : (canAssociate ? .secondary : .orange))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(expense.placeName ?? expense.category?.displayName ?? t("transaction.noPlace"))
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(expense.date.formatted(.dateTime.day().month(.abbreviated).year().locale(LanguageManager.shared.effective.locale)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Text(expense.amount.asCurrency(currencyCode))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(canAssociate || isAssociated ? Color.primary : Color.orange)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!canAssociate && !isAssociated)
+    }
+
+    private func toggleAssociation(for expense: Transaction, isAssociated: Bool) {
+        if isAssociated {
+            guard let allocation = (withdrawal.outgoingCashAllocations ?? []).first(where: { $0.expenseTransaction?.id == expense.id }) else { return }
+            modelContext.delete(allocation)
+            return
+        }
+
+        guard expense.amount <= withdrawal.remainingCashAmount + 0.009 else { return }
+        let allocation = CashWithdrawalAllocation(
+            allocatedAmount: expense.amount,
+            withdrawalTransaction: withdrawal,
+            expenseTransaction: expense
+        )
+        modelContext.insert(allocation)
+    }
+}
+
+private struct CashExpenseWithdrawalPickerSheet: View {
+    let expense: Transaction
+    let withdrawals: [Transaction]
+    let currencyCode: String
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+
+    private var currentWithdrawal: Transaction? {
+        expense.parentCashWithdrawal
+    }
+
+    private var sortedWithdrawals: [Transaction] {
+        withdrawals.sorted { lhs, rhs in
+            if lhs.date == rhs.date { return lhs.remainingCashAmount > rhs.remainingCashAmount }
+            return lhs.date > rhs.date
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text(t("transaction.cashExpenseAssociationInfo"))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section(t("transaction.cashExpenseCurrentWithdrawal")) {
+                    if let currentWithdrawal {
+                        withdrawalRow(for: currentWithdrawal, isAssociated: true)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    removeCurrentAssociation()
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                            }
+                    } else {
+                        Text(t("transaction.cashExpenseNoWithdrawal"))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Section(t("transaction.cashExpenseAvailableWithdrawals")) {
+                    if sortedWithdrawals.isEmpty {
+                        Text(t("transaction.cashExpenseNoEligibleWithdrawals"))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(sortedWithdrawals) { withdrawal in
+                            withdrawalRow(for: withdrawal, isAssociated: currentWithdrawal?.id == withdrawal.id)
+                        }
+                    }
+                }
+            }
+            .navigationTitle(t("transaction.associateToWithdrawal"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(t("common.close")) { dismiss() }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func withdrawalRow(for withdrawal: Transaction, isAssociated: Bool) -> some View {
+        let canAssociate = isAssociated || expense.amount <= withdrawal.remainingCashAmount + (isAssociated ? expense.allocatedFromCashWithdrawalAmount : 0) + 0.009
+
+        Button {
+            toggleAssociation(to: withdrawal, isAssociated: isAssociated)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: isAssociated ? "checkmark.circle.fill" : (canAssociate ? "circle" : "exclamationmark.circle"))
+                    .foregroundStyle(isAssociated ? .green : (canAssociate ? .secondary : .orange))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(withdrawal.placeName ?? t("transaction.cashWithdrawalDefaultName"))
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(withdrawal.date.formatted(.dateTime.day().month(.abbreviated).year().locale(LanguageManager.shared.effective.locale)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(withdrawal.amount.asCurrency(currencyCode))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(t("transaction.cashRemainingValue", withdrawal.remainingCashAmount.asCurrency(currencyCode)))
+                        .font(.caption)
+                        .foregroundStyle(canAssociate || isAssociated ? Color.secondary : Color.orange)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!canAssociate && !isAssociated)
+    }
+
+    private func toggleAssociation(to withdrawal: Transaction, isAssociated: Bool) {
+        if let existingAllocation = (expense.incomingCashAllocations ?? []).first {
+            modelContext.delete(existingAllocation)
+            if isAssociated {
+                return
+            }
+        }
+
+        guard expense.amount <= withdrawal.remainingCashAmount + 0.009 else { return }
+        let allocation = CashWithdrawalAllocation(
+            allocatedAmount: expense.amount,
+            withdrawalTransaction: withdrawal,
+            expenseTransaction: expense
+        )
+        modelContext.insert(allocation)
+    }
+
+    private func removeCurrentAssociation() {
+        guard let existingAllocation = (expense.incomingCashAllocations ?? []).first else { return }
+        modelContext.delete(existingAllocation)
+    }
+}
+
 // MARK: - View
 
 private struct RecurrenceAmountPoint: Identifiable {
@@ -33,6 +407,7 @@ struct TransactionEditView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Account.createdAt)   private var accounts: [Account]
     @Query private var costCenters: [CostCenter]
+    @Query(sort: \Transaction.date, order: .reverse) private var allTransactions: [Transaction]
     @AppStorage("app.currencyCode")    private var currencyCode = CurrencyOption.defaultCode
 
     // Local state — aplicado no Save, descartado no Cancel
@@ -61,6 +436,10 @@ struct TransactionEditView: View {
     @State private var showReceiptCamera    = false
     @State private var showReceiptLibrary   = false
     @State private var showReceiptPDFPicker = false
+    @State private var showExistingCashExpensePicker = false
+    @State private var showNewCashExpenseFlow = false
+    @State private var showWithdrawalPickerSheet = false
+    @State private var selectedAssociatedExpense: Transaction? = nil
     @State private var previewURL: URL?     = nil
 
     // MARK: - Derived
@@ -85,6 +464,66 @@ struct TransactionEditView: View {
         }
     }
 
+    private var isCardBillPayment: Bool {
+        transaction.kind == .cardBillPayment
+    }
+
+    private var isCashWithdrawal: Bool {
+        transaction.kind == .cashWithdrawal
+    }
+
+    private var paidCreditCardAccount: Account? {
+        transaction.destinationAccount
+    }
+
+    private var withdrawalDestinationAccount: Account? {
+        transaction.destinationAccount
+    }
+
+    private var associatedCashExpenses: [Transaction] {
+        transaction.allocatedExpenses
+    }
+
+    private var eligibleCashExpenses: [Transaction] {
+        allTransactions.filter { candidate in
+            guard candidate.id != transaction.id else { return false }
+            guard candidate.type == .expense else { return false }
+            guard candidate.account?.type == .cash else { return false }
+            guard candidate.parentCashWithdrawal == nil || candidate.parentCashWithdrawal?.id == transaction.id else { return false }
+            return true
+        }
+    }
+
+    private var newCashExpenseInitialState: NewTransactionState {
+        let state = NewTransactionState()
+        state.type = .expense
+        state.kind = .regular
+        state.allowsKindSelection = false
+        state.account = transaction.destinationAccount
+        state.date = transaction.date
+        state.isPaid = true
+        return state
+    }
+
+    private var isCashExpense: Bool {
+        !isCashWithdrawal && transaction.type == .expense && selectedAccount?.type == .cash
+    }
+
+    private var selectedCashWithdrawal: Transaction? {
+        transaction.parentCashWithdrawal
+    }
+
+    private var eligibleWithdrawals: [Transaction] {
+        allTransactions.filter { candidate in
+            guard candidate.id != transaction.id else { return false }
+            guard candidate.kind == .cashWithdrawal else { return false }
+            guard candidate.parentCashWithdrawal == nil else { return false }
+            guard candidate.account?.type == .checking else { return false }
+            guard candidate.remainingCashAmount > 0.009 || candidate.id == selectedCashWithdrawal?.id else { return false }
+            return true
+        }
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -99,12 +538,147 @@ struct TransactionEditView: View {
                               ?? .usd).symbol)
                             .font(.title3.bold())
                             .foregroundStyle(.secondary)
-                        TextField("0,00", text: $amountText)
+                        TextField(t("transaction.amountPlaceholder"), text: $amountText)
                             .keyboardType(.decimalPad)
                             .font(.title3.bold())
                             .multilineTextAlignment(.trailing)
                     }
                     .padding(.vertical, 4)
+                }
+                
+                //Pagamento de fatura
+                if isCardBillPayment {
+                    Section {
+                        HStack(alignment: .top, spacing: 12) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(Color.blue.opacity(0.14))
+                                    .frame(width: 36, height: 36)
+                                Image(systemName: "creditcard.and.123")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.blue)
+                            }
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(t("transaction.billPaymentCard"))
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Text(paidCreditCardAccount?.name ?? t("common.none"))
+                                    .foregroundStyle(.secondary)
+                            }
+                            
+                            Spacer()
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
+                if isCashWithdrawal {
+                    Section {
+                        HStack(alignment: .top, spacing: 12) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(Color.orange.opacity(0.14))
+                                    .frame(width: 36, height: 36)
+                                Image(systemName: "banknote")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.orange)
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(t("transaction.cashWithdrawalAccount"))
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Text(withdrawalDestinationAccount?.name ?? t("common.none"))
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    Section(t("transaction.cashAllocationTitle")) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                allocationMetric(
+                                    title: t("transaction.cashAllocated"),
+                                    value: transaction.allocatedCashAmount.asCurrency(currencyCode),
+                                    color: .orange
+                                )
+                                Spacer()
+                                allocationMetric(
+                                    title: t("transaction.cashRemaining"),
+                                    value: transaction.remainingCashAmount.asCurrency(currencyCode),
+                                    color: transaction.remainingCashAmount > 0.009 ? .blue : .green
+                                )
+                            }
+
+                            HStack(spacing: 10) {
+                                Button {
+                                    showExistingCashExpensePicker = true
+                                } label: {
+                                    compactActionBadge(
+                                        title: t("transaction.associateExistingCashExpense"),
+                                        systemImage: "link.badge.plus",
+                                        tint: .accentColor
+                                    )
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    showNewCashExpenseFlow = true
+                                } label: {
+                                    compactActionBadge(
+                                        title: t("transaction.createNewCashExpense"),
+                                        systemImage: "plus.circle.fill",
+                                        tint: .green
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+
+                            if !associatedCashExpenses.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(t("transaction.associatedExpenses"))
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+
+                                    ForEach(associatedCashExpenses.prefix(3)) { expense in
+                                        Button {
+                                            selectedAssociatedExpense = expense
+                                        } label: {
+                                            HStack(spacing: 10) {
+                                                Image(systemName: expense.category?.icon ?? "banknote")
+                                                    .foregroundStyle(Color(hex: expense.category?.color ?? "#8E8E93"))
+                                                    .frame(width: 28, height: 28)
+                                                    .background(Color(hex: expense.category?.color ?? "#8E8E93").opacity(0.12))
+                                                    .clipShape(Circle())
+
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    Text(expense.placeName ?? expense.category?.displayName ?? t("transaction.noPlace"))
+                                                        .font(.subheadline)
+                                                        .foregroundStyle(.primary)
+                                                        .lineLimit(1)
+                                                    Text(expense.date.formatted(.dateTime.day().month(.abbreviated).locale(LanguageManager.shared.effective.locale)))
+                                                        .font(.caption)
+                                                        .foregroundStyle(.secondary)
+                                                }
+
+                                                Spacer()
+
+                                                Text(expense.amount.asCurrency(currencyCode))
+                                                    .font(.subheadline.weight(.semibold))
+                                                    .foregroundStyle(.primary)
+                                            }
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
                 }
 
                 // Detalhes
@@ -140,69 +714,80 @@ struct TransactionEditView: View {
                     }
                 }
 
-                // Categoria
-                Section(t("transaction.category")) {
-                    Button {
-                        showCategoryPicker = true
-                    } label: {
-                        HStack(spacing: 12) {
-                            if let cat = selectedCategory {
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(Color(hex: cat.color).opacity(0.15))
-                                        .frame(width: 32, height: 32)
-                                    Image(systemName: cat.icon)
-                                        .font(.subheadline)
-                                        .foregroundStyle(Color(hex: cat.color))
-                                }
+                if isCashExpense {
+                    Section(t("transaction.associateToWithdrawal")) {
+                        Button {
+                            showWithdrawalPickerSheet = true
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "banknote")
+                                    .foregroundStyle(Color.orange)
+                                    .frame(width: 32, height: 32)
+                                    .background(Color.orange.opacity(0.12))
+                                    .clipShape(Circle())
+
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(cat.displayName)
-                                        .font(.subheadline)
+                                    Text(selectedCashWithdrawal?.placeName ?? t("transaction.cashExpenseNoWithdrawal"))
                                         .foregroundStyle(.primary)
-                                    if let sub = selectedSubcategory {
-                                        Text(sub.displayName)
+                                    if let selectedCashWithdrawal {
+                                        Text(selectedCashWithdrawal.date.formatted(.dateTime.day().month(.abbreviated).year().locale(LanguageManager.shared.effective.locale)))
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
                                 }
-                            } else {
-                                Image(systemName: "tag")
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 32, height: 32)
-                                Text(t("transaction.noCategory"))
-                                    .foregroundStyle(.secondary)
+
+                                Spacer()
+
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.tertiary)
                             }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption.bold())
-                                .foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            if selectedCashWithdrawal != nil {
+                                Button(role: .destructive) {
+                                    removeCashWithdrawalAssociation()
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                            }
                         }
                     }
-                    .buttonStyle(.plain)
                 }
-                
-                // Projeto
-                if !costCenters.filter(\.isActive).isEmpty {
-                    Section(t("projects.section")) {
-                        Button { showProjectPicker = true } label: {
+
+                if !isCardBillPayment && !isCashWithdrawal {
+                   
+                    // Categoria
+                    Section(t("transaction.category")) {
+                        Button {
+                            showCategoryPicker = true
+                        } label: {
                             HStack(spacing: 12) {
-                                if let cc = selectedCostCenter {
+                                if let cat = selectedCategory {
                                     ZStack {
                                         RoundedRectangle(cornerRadius: 8)
-                                            .fill(Color(hex: cc.color).opacity(0.15))
+                                            .fill(Color(hex: cat.color).opacity(0.15))
                                             .frame(width: 32, height: 32)
-                                        Image(systemName: cc.icon)
+                                        Image(systemName: cat.icon)
                                             .font(.subheadline)
-                                            .foregroundStyle(Color(hex: cc.color))
+                                            .foregroundStyle(Color(hex: cat.color))
                                     }
-                                    Text(cc.name)
-                                        .font(.subheadline)
-                                        .foregroundStyle(.primary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(cat.displayName)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.primary)
+                                        if let sub = selectedSubcategory {
+                                            Text(sub.displayName)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
                                 } else {
-                                    Image(systemName: "folder")
+                                    Image(systemName: "tag")
                                         .foregroundStyle(.secondary)
                                         .frame(width: 32, height: 32)
-                                    Text(t("projects.noProject"))
+                                    Text(t("transaction.noCategory"))
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
@@ -212,8 +797,42 @@ struct TransactionEditView: View {
                             }
                         }
                         .buttonStyle(.plain)
-                        .sheet(isPresented: $showProjectPicker) {
-                            ProjectPickerSheet(selectedCostCenter: $selectedCostCenter)
+                    }
+
+                    // Projeto
+                    if !costCenters.filter(\.isActive).isEmpty {
+                        Section(t("projects.section")) {
+                            Button { showProjectPicker = true } label: {
+                                HStack(spacing: 12) {
+                                    if let cc = selectedCostCenter {
+                                        ZStack {
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .fill(Color(hex: cc.color).opacity(0.15))
+                                                .frame(width: 32, height: 32)
+                                            Image(systemName: cc.icon)
+                                                .font(.subheadline)
+                                                .foregroundStyle(Color(hex: cc.color))
+                                        }
+                                        Text(cc.name)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.primary)
+                                    } else {
+                                        Image(systemName: "folder")
+                                            .foregroundStyle(.secondary)
+                                            .frame(width: 32, height: 32)
+                                        Text(t("projects.noProject"))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.bold())
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .sheet(isPresented: $showProjectPicker) {
+                                ProjectPickerSheet(selectedCostCenter: $selectedCostCenter)
+                            }
                         }
                     }
                 }
@@ -369,6 +988,30 @@ struct TransactionEditView: View {
                     transactionType:     transaction.type
                 )
             }
+            .sheet(isPresented: $showExistingCashExpensePicker) {
+                ExistingCashExpensePickerSheet(
+                    withdrawal: transaction,
+                    currencyCode: currencyCode
+                )
+            }
+            .sheet(isPresented: $showNewCashExpenseFlow) {
+                NewTransactionFlowView(
+                    initialState: newCashExpenseInitialState,
+                    jumpToReview: false
+                ) { expense in
+                    associateNewCashExpense(expense)
+                }
+            }
+            .sheet(isPresented: $showWithdrawalPickerSheet) {
+                CashExpenseWithdrawalPickerSheet(
+                    expense: transaction,
+                    withdrawals: eligibleWithdrawals,
+                    currencyCode: currencyCode
+                )
+            }
+            .sheet(item: $selectedAssociatedExpense) { expense in
+                TransactionEditView(transaction: expense)
+            }
             .sheet(isPresented: $showReceiptCamera) {
                 ImagePickerView(sourceType: .camera) { image in
                     _ = try? ReceiptAttachmentStore.addImage(image, to: transaction, in: modelContext)
@@ -384,7 +1027,7 @@ struct TransactionEditView: View {
                 set: { if !$0 { previewURL = nil } }
             )) {
                 if let previewURL {
-                    ReceiptPreviewSheet(url: previewURL)
+                    ReceiptPreviewContainerSheet(url: previewURL)
                 }
             }
             .fileImporter(
@@ -704,6 +1347,43 @@ struct TransactionEditView: View {
         return formatter.string(from: date).capitalized
     }
 
+    @ViewBuilder
+    private func compactActionBadge(title: String, systemImage: String, tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.caption.weight(.semibold))
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .background(tint.opacity(0.12))
+        .clipShape(Capsule())
+    }
+
+    private func associateNewCashExpense(_ expense: Transaction) {
+        guard expense.type == .expense else { return }
+        guard expense.account?.type == .cash else { return }
+        guard expense.parentCashWithdrawal == nil else { return }
+        guard expense.amount <= transaction.remainingCashAmount + 0.009 else { return }
+
+        let allocation = CashWithdrawalAllocation(
+            allocatedAmount: expense.amount,
+            withdrawalTransaction: transaction,
+            expenseTransaction: expense
+        )
+        modelContext.insert(allocation)
+    }
+
+    private func removeCashWithdrawalAssociation() {
+        guard let allocation = (transaction.incomingCashAllocations ?? []).first else { return }
+        modelContext.delete(allocation)
+    }
+
     // MARK: - Load
 
     private func loadTransaction() {
@@ -789,10 +1469,27 @@ struct TransactionEditView: View {
         tx.amount       = amount
         tx.placeName    = placeName.isEmpty ? nil : placeName
         tx.account      = selectedAccount
-        tx.category     = selectedCategory
-        tx.subcategory  = selectedSubcategory
         tx.notes        = notes.isEmpty ? nil : notes
-        tx.costCenterId = selectedCostCenter?.id
+        if tx.kind == .cardBillPayment || tx.kind == .cashWithdrawal {
+            tx.category = nil
+            tx.subcategory = nil
+            tx.costCenterId = nil
+        } else {
+            tx.category = selectedCategory
+            tx.subcategory = selectedSubcategory
+            tx.costCenterId = selectedCostCenter?.id
+        }
+    }
+
+    private func allocationMetric(title: String, value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(color)
+        }
     }
 
     private func delete(scope: RecurrenceEditScope) {

@@ -1,5 +1,6 @@
 import SwiftUI
 import QuickLook
+import UIKit
 
 struct ReceiptAttachmentRow: View {
     let name: String
@@ -106,4 +107,50 @@ struct ReceiptPreviewSheet: UIViewControllerRepresentable {
             url as NSURL
         }
     }
+}
+
+struct ReceiptPreviewContainerSheet: View {
+    let url: URL
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var showShareSheet = false
+
+    var body: some View {
+        NavigationStack {
+            ReceiptPreviewSheet(url: url)
+                .navigationTitle(url.lastPathComponent)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(t("common.close")) {
+                            dismiss()
+                        }
+                    }
+
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showShareSheet = true
+                        } label: {
+                            Label(t("common.share"), systemImage: "square.and.arrow.up")
+                        }
+                    }
+                }
+        }
+        .sheet(isPresented: $showShareSheet) {
+            ReceiptAttachmentShareSheet(url: url)
+        }
+    }
+}
+
+private struct ReceiptAttachmentShareSheet: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(
+            activityItems: [url],
+            applicationActivities: nil
+        )
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

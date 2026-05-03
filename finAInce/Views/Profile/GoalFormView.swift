@@ -4,7 +4,6 @@ import SwiftData
 struct GoalFormView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-    @Query private var categories: [Category]
 
     var goal: Goal? // nil = nova meta
 
@@ -15,18 +14,29 @@ struct GoalFormView: View {
     @State private var selectedSymbol = "target"
     @State private var isGeneral   = true
     @State private var selectedCategory: Category? = nil
+    @State private var selectedSubcategory: Category? = nil
     @State private var showSymbolPicker = false
+    @State private var showCategoryPicker = false
     @State private var didChooseCustomSymbol = false
 
     private var isEditing: Bool { goal != nil }
 
-    private var rootCategories: [Category] {
-        categories.filter { $0.parent == nil && $0.type == .expense }
-                  .sorted { $0.sortOrder < $1.sortOrder }
-    }
-
     private var canSave: Bool {
         !title.isEmpty && (Double(targetText.replacingOccurrences(of: ",", with: ".")) ?? 0) > 0
+    }
+
+    private var selectedGoalCategory: Category? {
+        selectedSubcategory ?? selectedCategory
+    }
+
+    private var selectedGoalCategoryLabel: String {
+        if let subcategory = selectedSubcategory, let category = selectedCategory {
+            return "\(category.displayName) / \(subcategory.displayName)"
+        }
+        if let category = selectedCategory {
+            return category.displayName
+        }
+        return t("goal.selectCategory")
     }
 
     let symbolOptions = [
@@ -100,22 +110,54 @@ struct GoalFormView: View {
                         .onChange(of: isGeneral) { _, v in
                             if v {
                                 selectedCategory = nil
+                                selectedSubcategory = nil
                                 applyDefaultSymbol("target")
                             }
                         }
 
                     if !isGeneral {
-                        Picker(t("goal.category"), selection: $selectedCategory) {
-                            Text(t("goal.selectCategory")).tag(Category?.none)
-                            ForEach(rootCategories) { cat in
-                                Label(cat.displayName, systemImage: cat.icon).tag(Category?.some(cat))
+                        Button {
+                            showCategoryPicker = true
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: selectedGoalCategory?.icon ?? "square.grid.2x2")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(selectedGoalCategory == nil ? FinAInceColor.secondaryText : Color.accentColor)
+                                    .frame(width: 32, height: 32)
+                                    .background(FinAInceColor.inputFieldSurface)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(t("goal.category"))
+                                        .font(.caption)
+                                        .foregroundStyle(FinAInceColor.secondaryText)
+
+                                    Text(selectedGoalCategoryLabel)
+                                        .font(.body.weight(.medium))
+                                        .foregroundStyle(selectedGoalCategory == nil ? FinAInceColor.secondaryText : FinAInceColor.primaryText)
+                                        .multilineTextAlignment(.leading)
+                                }
+
+                                Spacer()
+
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(FinAInceColor.secondaryText)
                             }
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
-            .onChange(of: selectedCategory?.id) { _, _ in
-                applyDefaultSymbol(selectedCategory?.icon ?? "target")
+            .sheet(isPresented: $showCategoryPicker) {
+                CategoryPickerSheet(
+                    selectedCategory: $selectedCategory,
+                    selectedSubcategory: $selectedSubcategory,
+                    transactionType: .expense
+                )
+            }
+            .onChange(of: selectedGoalCategory?.id) { _, _ in
+                applyDefaultSymbol(selectedGoalCategory?.icon ?? "target")
             }
             .navigationTitle(isEditing ? t("goal.edit") : t("goal.new"))
             .navigationBarTitleDisplayMode(.inline)
@@ -139,7 +181,13 @@ struct GoalFormView: View {
         selectedSymbol = goal.iconName
         targetText = String(format: "%.2f", goal.targetAmount).replacingOccurrences(of: ".", with: ",")
         isGeneral  = goal.category == nil
-        selectedCategory = goal.category
+        if let goalCategory = goal.category, let parent = goalCategory.parent {
+            selectedCategory = parent
+            selectedSubcategory = goalCategory
+        } else {
+            selectedCategory = goal.category
+            selectedSubcategory = nil
+        }
     }
 
     private func applyDefaultSymbol(_ symbol: String) {
@@ -154,7 +202,7 @@ struct GoalFormView: View {
 
     private func save() {
         let amount = Double(targetText.replacingOccurrences(of: ",", with: ".")) ?? 0
-        let cat = isGeneral ? nil : selectedCategory
+        let cat = isGeneral ? nil : selectedGoalCategory
         let symbol = symbolForSave(category: cat)
 
         if let goal {

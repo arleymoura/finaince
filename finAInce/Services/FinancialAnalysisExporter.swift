@@ -207,15 +207,13 @@ struct FinancialAnalysisExporter {
     }
 
     private static func spentAmount(for goal: Goal, in transactions: [Transaction]) -> Double {
-        guard let goalCategory = goal.category else {
+        guard goal.category != nil else {
             return transactions.reduce(0) { $0 + $1.amount }
         }
 
         return transactions
             .filter { transaction in
-                let root = transaction.category?.parent ?? transaction.category
-                return root?.persistentModelID == goalCategory.persistentModelID ||
-                    transaction.category?.persistentModelID == goalCategory.persistentModelID
+                goal.matches(transaction)
             }
             .reduce(0) { $0 + $1.amount }
     }
@@ -321,9 +319,13 @@ struct FinancialAnalysisExporter {
             .map { account -> String in
                 var details = "- \(account.name): \(account.type.label)"
                 if account.type == .creditCard {
-                    let start = account.ccBillingStartDay.map(String.init) ?? "not defined"
-                    let end = account.ccBillingEndDay.map(String.init) ?? "not defined"
-                    details += " · Billing window: day \(start) to day \(end)"
+                    let cycleStart = account.billingStartDay.map(String.init) ?? "not defined"
+                    let cycleEnd = account.billingCycleEndDay.map(String.init) ?? "not defined"
+                    let closing = account.billingClosingDay.map(String.init) ?? "not defined"
+                    let due = account.ccPaymentDueDay.map(String.init) ?? "not defined"
+                    details += " · Billing cycle: day \(cycleStart) to day \(cycleEnd)"
+                    details += " · Closing day \(closing)"
+                    details += " · Payment due day \(due)"
                 }
                 if account.isDefault {
                     details += " · Default"
@@ -485,9 +487,13 @@ struct FinancialAnalysisExporter {
 
         var summary = "\(account.name) (\(account.type.label))"
         if account.type == .creditCard {
-            let start = account.ccBillingStartDay.map(String.init) ?? "not defined"
-            let end = account.ccBillingEndDay.map(String.init) ?? "not defined"
-            summary += ", billing window day \(start) to day \(end)"
+            let cycleStart = account.billingStartDay.map(String.init) ?? "not defined"
+            let cycleEnd = account.billingCycleEndDay.map(String.init) ?? "not defined"
+            let closing = account.billingClosingDay.map(String.init) ?? "not defined"
+            let due = account.ccPaymentDueDay.map(String.init) ?? "not defined"
+            summary += ", billing cycle day \(cycleStart) to day \(cycleEnd)"
+            summary += ", closing day \(closing)"
+            summary += ", payment due day \(due)"
         }
         return summary
     }

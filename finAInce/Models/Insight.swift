@@ -20,6 +20,12 @@ enum InsightType: Hashable {
     case streakSaving
     case behaviorPattern
     case categoryOverBaseline
+    case bestPurchaseTiming
+    case closingRisk
+    case attentionWindow
+    case creditCardSpendingTrend
+    case creditLimitRisk
+    case creditCardForecastOverflow
 }
 
 typealias InsightKind = InsightType
@@ -52,6 +58,19 @@ struct Insight: Identifiable {
     let sentiment: InsightSentiment
     let topicKey: String
     let metadata: InsightMetadata?
+}
+
+struct DailyInsight: Identifiable {
+    let id = UUID()
+    let sourceInsight: Insight
+    let title: String
+    let explanation: String
+    let action: String
+    let chatPrompt: String
+
+    var icon: String { sourceInsight.icon }
+    var color: Color { sourceInsight.color }
+    var sentiment: InsightSentiment { sourceInsight.sentiment }
 }
 
 // MARK: - IdentifiableString (shared helper)

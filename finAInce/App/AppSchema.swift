@@ -92,6 +92,7 @@ enum SchemaV2: VersionedSchema {
         Account.self,
         Category.self,
         Transaction.self,
+        CashWithdrawalAllocation.self,
         ReceiptAttachment.self,
         AISettings.self,
         AIAnalysis.self,

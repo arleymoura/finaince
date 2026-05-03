@@ -10,6 +10,13 @@ import SwiftData
 import FoundationModels
 #endif
 
+fileprivate func financeNormalizeForMatching(_ text: String) -> String {
+    text
+        .lowercased()
+        .replacingOccurrences(of: "[^a-z]", with: "", options: .regularExpression)
+        .folding(options: [.diacriticInsensitive], locale: .current)
+}
+
 // MARK: - Thread-safe snapshots (plain Sendable structs, sem SwiftData)
 
 struct TransactionSnapshot: Sendable {
@@ -50,8 +57,37 @@ extension GoalSnapshot {
 struct AccountSnapshot: Sendable {
     let name: String
     let typeLabel: String
+    let semanticType: String
+    let aliases: [String]
     let balance: Double
     let isDefault: Bool
+    let creditLimit: Double?
+    let billingClosingDay: Int?
+    let paymentDueDay: Int?
+    let estimatedBillAmount: Double?
+    let billingWindowStart: Date?
+    let billingWindowEnd: Date?
+    let daysUntilClosing: Int?
+}
+
+struct ProjectSnapshot: Sendable {
+    let name: String
+    let description: String?
+    let isActive: Bool
+    let budget: Double?
+    let spent: Double
+}
+
+struct FamilySnapshot: Sendable {
+    let name: String
+    let accountsCount: Int
+    let goalsCount: Int
+}
+
+struct UserProfileSnapshot: Sendable {
+    let name: String
+    let adultsCount: Int
+    let childrenCount: Int
 }
 
 struct RegisteredCategorySnapshot: Sendable {
@@ -109,12 +145,90 @@ extension Goal {
 }
 
 extension Account {
-    func asSnapshot() -> AccountSnapshot {
-        AccountSnapshot(
+    func asSnapshot(transactions: [Transaction], referenceDate: Date = Date()) -> AccountSnapshot {
+        let forecast = Self.creditCardForecast(for: self, transactions: transactions, referenceDate: referenceDate)
+        return AccountSnapshot(
             name:      name,
             typeLabel: type.label,
+            semanticType: Self.semanticType(for: type),
+            aliases: Self.aliases(for: type),
             balance:   balance,
-            isDefault: isDefault
+            isDefault: isDefault,
+            creditLimit: ccCreditLimit,
+            billingClosingDay: billingClosingDay,
+            paymentDueDay: ccPaymentDueDay,
+            estimatedBillAmount: forecast?.amount,
+            billingWindowStart: forecast?.start,
+            billingWindowEnd: forecast?.end,
+            daysUntilClosing: forecast?.daysUntilClosing
+        )
+    }
+
+    private static func semanticType(for type: AccountType) -> String {
+        switch type {
+        case .checking:
+            return "bank_checking_account"
+        case .cash:
+            return "cash_wallet_account"
+        case .creditCard:
+            return "credit_card_account"
+        }
+    }
+
+    private static func aliases(for type: AccountType) -> [String] {
+        switch type {
+        case .checking:
+            return ["checking", "bank", "current account", "conta corrente"]
+        case .cash:
+            return ["cash", "wallet", "money", "carteira", "dinheiro"]
+        case .creditCard:
+            return ["credit card", "card", "invoice", "fatura", "cartao de credito"]
+        }
+    }
+
+    private static func creditCardForecast(
+        for account: Account,
+        transactions: [Transaction],
+        referenceDate: Date
+    ) -> (amount: Double, start: Date, end: Date, daysUntilClosing: Int)? {
+        guard account.type == .creditCard,
+              let cycle = account.billingCycleRange(containing: referenceDate) else {
+            return nil
+        }
+
+        let calendar = Calendar.current
+        let amount = transactions
+            .filter { $0.type == .expense }
+            .filter { $0.account?.id == account.id }
+            .filter { $0.date >= cycle.start && $0.date < cycle.nextStart }
+            .reduce(0) { $0 + $1.amount }
+
+        let days = max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: referenceDate), to: cycle.nextStart).day ?? 0)
+        return (amount: amount, start: cycle.start, end: cycle.end, daysUntilClosing: days)
+    }
+}
+
+extension CostCenter {
+    func asSnapshot(currencyCode: String, transactions: [Transaction]) -> ProjectSnapshot {
+        let spent = transactions
+            .filter { $0.costCenterId == id }
+            .reduce(0) { $0 + $1.amount }
+        return ProjectSnapshot(
+            name: name,
+            description: desc,
+            isActive: isActive,
+            budget: budget,
+            spent: spent
+        )
+    }
+}
+
+extension Family {
+    func asSnapshot() -> FamilySnapshot {
+        FamilySnapshot(
+            name: name,
+            accountsCount: accounts?.count ?? 0,
+            goalsCount: goals?.count ?? 0
         )
     }
 }
@@ -125,7 +239,10 @@ struct FinanceContext: Sendable {
     let transactions:       [TransactionSnapshot]
     let goals:              [GoalSnapshot]
     let accounts:           [AccountSnapshot]
+    let projects:           [ProjectSnapshot]
+    let families:           [FamilySnapshot]
     let categories:         [RegisteredCategorySnapshot]
+    let userProfile:        UserProfileSnapshot
     let currencyCode:       String
     let appLanguageCode:    String
     let localeIdentifier:   String
@@ -135,7 +252,10 @@ struct FinanceContext: Sendable {
         transactions: [TransactionSnapshot],
         goals: [GoalSnapshot],
         accounts: [AccountSnapshot],
+        projects: [ProjectSnapshot],
+        families: [FamilySnapshot],
         categories: [RegisteredCategorySnapshot],
+        userProfile: UserProfileSnapshot,
         currencyCode: String,
         appLanguageCode: String,
         localeIdentifier: String,
@@ -144,7 +264,10 @@ struct FinanceContext: Sendable {
         self.transactions = transactions
         self.goals = goals
         self.accounts = accounts
+        self.projects = projects
+        self.families = families
         self.categories = categories
+        self.userProfile = userProfile
         self.currencyCode = currencyCode
         self.appLanguageCode = appLanguageCode
         self.localeIdentifier = localeIdentifier
@@ -225,7 +348,7 @@ enum LocalAIService {
 
     // MARK: - System prompt
 
-    static func buildSystemPrompt(context: FinanceContext) -> String {
+    static func buildSystemPrompt(context: FinanceContext, latestUserMessage: String = "") -> String {
         let tz  = TimeZone(identifier: context.timeZoneIdentifier) ?? .current
         let appLanguage = AppLanguage(rawValue: context.appLanguageCode) ?? LanguageManager.shared.effective
         let loc = appLanguage.locale
@@ -243,7 +366,24 @@ enum LocalAIService {
         } else {
             accountLines = context.accounts.map { acc in
                 let tag = acc.isDefault ? " ★ default" : ""
-                return "  • \(acc.name) [\(acc.typeLabel)]\(tag)"
+                let aliases = acc.aliases.joined(separator: ", ")
+                let forecast: String
+                if acc.semanticType == "credit_card_account",
+                   let estimatedBillAmount = acc.estimatedBillAmount,
+                   let windowStart = acc.billingWindowStart,
+                   let windowEnd = acc.billingWindowEnd {
+                    let closing = acc.billingClosingDay.map(String.init) ?? "not defined"
+                    let due = acc.paymentDueDay.map(String.init) ?? "not defined"
+                    let days = acc.daysUntilClosing.map(String.init) ?? "0"
+                    let availableCreditEstimate = acc.creditLimit.map {
+                        context.formatCurrency($0 - estimatedBillAmount)
+                    } ?? "User did not define a limit"
+                    forecast = " | estimated_bill: \(context.formatCurrency(estimatedBillAmount)) | available_credit_estimate: \(availableCreditEstimate) | billing_window: \(windowStart.formatted(.dateTime.year().month().day())) to \(windowEnd.formatted(.dateTime.year().month().day())) | closing_day: \(closing) | due_day: \(due) | days_until_closing: \(days)"
+                } else {
+                    forecast = ""
+                }
+                let creditLimit = acc.creditLimit.map { " | credit_limit: \(context.formatCurrency($0))" } ?? " | credit_limit: User did not define a limit"
+                return "  • \(acc.name) [\(acc.typeLabel)]\(tag) | semantic_type: \(acc.semanticType) | aliases: \(aliases)\(creditLimit)\(forecast)"
             }.joined(separator: "\n")
         }
 
@@ -255,6 +395,38 @@ enum LocalAIService {
                 "  • \(category.displayName) [key: \(category.systemKey ?? "-")]"
             }.joined(separator: "\n")
         }
+
+        let profileName = context.userProfile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let profileLines = [
+            "  • name: \(profileName.isEmpty ? "not defined" : profileName)",
+            "  • adults: \(context.userProfile.adultsCount)",
+            "  • children: \(context.userProfile.childrenCount)"
+        ].joined(separator: "\n")
+
+        let familyLines: String
+        if context.families.isEmpty {
+            familyLines = "  (no families registered)"
+        } else {
+            familyLines = context.families.map { family in
+                "  • \(family.name) | accounts: \(family.accountsCount) | goals: \(family.goalsCount)"
+            }.joined(separator: "\n")
+        }
+
+        let projectLines: String
+        if context.projects.isEmpty {
+            projectLines = "  (no projects registered)"
+        } else {
+            projectLines = context.projects.map { project in
+                let budget = project.budget.map { context.formatCurrency($0) } ?? "none"
+                let description = project.description?.trimmingCharacters(in: .whitespacesAndNewlines)
+                return "  • \(project.name) | status: \(project.isActive ? "active" : "inactive") | budget: \(budget) | spent: \(context.formatCurrency(project.spent)) | description: \(description?.isEmpty == false ? description! : "none")"
+            }.joined(separator: "\n")
+        }
+
+        let relevantEntityLines = relevantEntitiesBlock(
+            for: latestUserMessage,
+            context: context
+        )
 
         return """
         You are the personal finance assistant inside the finAInce app.
@@ -272,6 +444,16 @@ enum LocalAIService {
         - Interpret the data instead of repeating raw numbers without context.
         - If the request is ambiguous or lacks key context such as period, category, or account,
           ask one direct clarification question before answering.
+        - If the user asks whether they have a credit card, card bill, wallet, cash account, or checking account, inspect the registered accounts first.
+        - If the user asks about their card, invoice, bill closing, current bill amount, closing forecast, card limit, or available card limit, inspect the credit card accounts and their estimated_bill, credit_limit, and available_credit_estimate fields first.
+        - Treat these app concepts as distinct:
+          • credit card account = account with semantic_type credit_card_account
+          • cash / wallet = account with semantic_type cash_wallet_account
+          • checking / bank account = account with semantic_type bank_checking_account
+          • bill payment = a card bill payment transaction, not the same as a purchase on the card
+          • cash withdrawal = moving money from checking to cash/wallet, not an expense by itself
+          • card closing forecast = estimated sum of posted expense transactions inside the current billing window
+        - If a credit card account shows credit_limit: User did not define a limit, suggest that the user add the card limit in the account settings, because that improves available-limit answers and card insights.
 
         ## Critical output rules
         - Never reveal chain-of-thought, internal reasoning, or intermediate steps.
@@ -280,12 +462,16 @@ enum LocalAIService {
           or anything similar.
         - Present the answer directly, as if you naturally know the user's finances.
         - Tool outputs are internal context and must never be shown literally.
+        - If the user explicitly asks to list transactions, list every transaction returned by buscar_transacoes up to the tool limit and attach direct details when helpful.
+        - If the user did not explicitly ask for a full list, summarize only the most relevant 1 to 3 matches.
+        - If the user asks for transactions but does not specify a period, assume the current month by default.
 
         ## Available tools (use silently)
         - buscar_transacoes   — filters expenses by period, category, or account
         - resumo_do_mes       — monthly totals and top categories
         - verificar_metas     — spending goal progress
         - consultar_contas    — account balances
+        - consultar_entidades_financeiras — searches accounts, credit card forecast, goals, projects, and family context
         - criar_transacao     — creates a new expense and lets the app show a confirmation card
 
         ## When to call criar_transacao
@@ -300,6 +486,18 @@ enum LocalAIService {
 
         ## Registered expense categories (use in criar_transacao → categoryKey)
         \(categoryLines)
+
+        ## User profile
+        \(profileLines)
+
+        ## Registered families
+        \(familyLines)
+
+        ## Registered projects
+        \(projectLines)
+
+        ## Entities most relevant to the latest user request
+        \(relevantEntityLines)
 
         ## User context
         Current date/time : \(dateStr)
@@ -347,7 +545,10 @@ enum LocalAIService {
                 ? userMessage
                 : "\(conversationHistory)\n\nUsuário: \(userMessage)"
 
-            let systemPrompt = buildSystemPrompt(context: context)
+            let systemPrompt = buildSystemPrompt(context: context, latestUserMessage: userMessage)
+            let relevantEntityLines = relevantEntitiesBlock(for: userMessage, context: context)
+            debugPrintPrompt(label: "AI Local Prompt", prompt: systemPrompt)
+            debugPrintRAG(label: "AI Local Retrieval", query: userMessage, entityBlock: relevantEntityLines)
             let draftBox     = DraftBox()
 
             do {
@@ -357,6 +558,7 @@ enum LocalAIService {
                         ResumoDoMesTool(ctx: context),
                         VerificarMetasTool(ctx: context),
                         ConsultarContasTool(ctx: context),
+                        ConsultarEntidadesFinanceirasTool(ctx: context),
                         CriarTransacaoTool(ctx: context, box: draftBox),
                     ],
                     instructions: systemPrompt
@@ -443,11 +645,138 @@ enum LocalAIService {
             return responseLanguageInstruction(for: LanguageManager.shared.effective)
         }
     }
+
+    private static func searchTokens(from text: String) -> [String] {
+        text
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count >= 3 }
+            .map(financeNormalizeForMatching)
+            .filter { !$0.isEmpty }
+    }
+
+    private static func entityScore(tokens: [String], haystack: String) -> Int {
+        var score = 0
+        for token in tokens {
+            if token.count >= 4 && haystack.contains(token) {
+                score += 3
+            } else if token.count >= 3 && haystack.contains(token) {
+                score += 2
+            }
+        }
+        return score
+    }
+
+    static func relevantEntitiesBlock(for query: String, context: FinanceContext) -> String {
+        let tokens = searchTokens(from: query)
+        guard !tokens.isEmpty else {
+            return "  (no explicit entity search terms detected)"
+        }
+
+        struct Match {
+            let score: Int
+            let line: String
+        }
+
+        var matches: [Match] = []
+
+        for account in context.accounts {
+            let haystack = ([account.name, account.typeLabel, account.semanticType] + account.aliases)
+                .map(financeNormalizeForMatching)
+                .joined(separator: " ")
+            let score = entityScore(tokens: tokens, haystack: haystack)
+            if score > 0 {
+                matches.append(.init(
+                    score: score,
+                    line: "  • account: \(account.name) [\(account.typeLabel)] | semantic_type: \(account.semanticType) | balance: \(context.formatCurrency(account.balance))"
+                ))
+            }
+        }
+
+        for goal in context.goals {
+            let haystack = [goal.title, goal.categoryName ?? ""]
+                .map(financeNormalizeForMatching)
+                .joined(separator: " ")
+            let score = entityScore(tokens: tokens, haystack: haystack)
+            if score > 0 {
+                matches.append(.init(
+                    score: score,
+                    line: "  • goal: \(goal.title) | category: \(goal.categoryName ?? "all spending") | target: \(context.formatCurrency(goal.targetAmount))"
+                ))
+            }
+        }
+
+        for project in context.projects {
+            let haystack = [project.name, project.description ?? ""]
+                .map(financeNormalizeForMatching)
+                .joined(separator: " ")
+            let score = entityScore(tokens: tokens, haystack: haystack)
+            if score > 0 {
+                matches.append(.init(
+                    score: score,
+                    line: "  • project: \(project.name) | status: \(project.isActive ? "active" : "inactive") | spent: \(context.formatCurrency(project.spent))"
+                ))
+            }
+        }
+
+        for family in context.families {
+            let haystack = financeNormalizeForMatching(family.name)
+            let score = entityScore(tokens: tokens, haystack: haystack)
+            if score > 0 {
+                matches.append(.init(
+                    score: score,
+                    line: "  • family: \(family.name) | accounts: \(family.accountsCount) | goals: \(family.goalsCount)"
+                ))
+            }
+        }
+
+        guard !matches.isEmpty else {
+            return "  (no direct account, family, goal, or project matches found)"
+        }
+
+        return matches
+            .sorted { $0.score > $1.score }
+            .prefix(8)
+            .map(\.line)
+            .joined(separator: "\n")
+    }
+
+    private static func debugPrintPrompt(label: String, prompt: String) {
+#if DEBUG
+        print("\n========== \(label) ==========\n\(prompt)\n========== END \(label) ==========\n")
+#endif
+    }
+
+    private static func debugPrintRAG(label: String, query: String, entityBlock: String) {
+#if DEBUG
+        print(
+            """
+
+            ========== \(label) ==========
+            Query:
+            \(query.isEmpty ? "None." : query)
+
+            Entities RAG:
+            \(entityBlock)
+            ========== END \(label) ==========
+
+            """
+        )
+#endif
+    }
 }
 
 // MARK: - Tools (device-only: FoundationModelsMacros plugin is not in the Simulator SDK)
 
 #if canImport(FoundationModels) && !targetEnvironment(simulator)
+
+private enum AIToolLogger {
+    nonisolated static func log(_ label: String, payload: String) {
+#if DEBUG
+        print("\n[AI Tool] \(label)\n\(payload)\n")
+#endif
+    }
+}
 
 // ── Buscar Transações ──────────────────────────────────────────────────────
 
@@ -469,24 +798,27 @@ struct BuscarTransacoesTool: Tool {
         var categoria: String?
         @Guide(description: "Nome parcial da conta. Omitir para todas.")
         var conta: String?
-        @Guide(description: "Máximo de itens a retornar. Padrão 20.")
+        @Guide(description: "Máximo de itens a retornar. Padrão 50.")
         var limite: Int?
     }
 
     let ctx: FinanceContext
 
     func call(arguments: Arguments) async throws -> String {
+        AIToolLogger.log(
+            "buscar_transacoes",
+            payload: "mes=\(arguments.mes.map(String.init) ?? "nil") | ano=\(arguments.ano.map(String.init) ?? "nil") | categoria=\(arguments.categoria ?? "nil") | conta=\(arguments.conta ?? "nil") | limite=\(arguments.limite.map(String.init) ?? "nil")"
+        )
         let cal         = Calendar.current
         let now         = Date()
         let targetYear  = arguments.ano ?? cal.component(.year, from: now)
 
         var results = ctx.transactions.filter(\.isExpense)
 
-        if let month = arguments.mes {
-            results = results.filter {
-                cal.component(.year,  from: $0.date) == targetYear &&
-                cal.component(.month, from: $0.date) == month
-            }
+        let targetMonth = arguments.mes ?? cal.component(.month, from: now)
+        results = results.filter {
+            cal.component(.year,  from: $0.date) == targetYear &&
+            cal.component(.month, from: $0.date) == targetMonth
         }
         if let cat = arguments.categoria {
             results = results.filter {
@@ -500,10 +832,12 @@ struct BuscarTransacoesTool: Tool {
             }
         }
 
-        results = Array(results.sorted { $0.date > $1.date }.prefix(arguments.limite ?? 20))
+        results = Array(results.sorted { $0.date > $1.date }.prefix(arguments.limite ?? 50))
 
         guard !results.isEmpty else {
-            return ("Nenhuma despesa encontrada com esses filtros.")
+            let result = "Nenhuma despesa encontrada com esses filtros."
+            AIToolLogger.log("buscar_transacoes.result", payload: result)
+            return result
         }
 
         let total = results.reduce(0.0) { $0 + $1.amount }
@@ -514,9 +848,9 @@ struct BuscarTransacoesTool: Tool {
             return "• \(d) | \(ctx.formatCurrency(tx.amount)) | \(place) [\(tx.categoryName)\(sub)]"
         }.joined(separator: "\n")
 
-        return (
-            "\(results.count) despesa(s) — Total: \(ctx.formatCurrency(total))\n\(lines)"
-        )
+        let result = "\(results.count) despesa(s) — Total: \(ctx.formatCurrency(total))\n\(lines)"
+        AIToolLogger.log("buscar_transacoes.result", payload: result)
+        return result
     }
 }
 
@@ -541,13 +875,19 @@ struct ResumoDoMesTool: Tool {
     let ctx: FinanceContext
 
     func call(arguments: Arguments) async throws -> String {
+        AIToolLogger.log(
+            "resumo_do_mes",
+            payload: "mes=\(arguments.mes.map(String.init) ?? "nil") | ano=\(arguments.ano.map(String.init) ?? "nil")"
+        )
         let cal          = Calendar.current
         let now          = Date()
         let targetMonth  = arguments.mes ?? cal.component(.month, from: now)
         let targetYear   = arguments.ano ?? cal.component(.year,  from: now)
 
         guard (1...12).contains(targetMonth) else {
-            return "Não consegui gerar o resumo: o mês informado precisa estar entre 1 e 12."
+            let result = "Não consegui gerar o resumo: o mês informado precisa estar entre 1 e 12."
+            AIToolLogger.log("resumo_do_mes.result", payload: result)
+            return result
         }
 
         let monthTx = ctx.transactions.filter {
@@ -586,14 +926,16 @@ struct ResumoDoMesTool: Tool {
             ? df.monthSymbols[targetMonth - 1].capitalized
             : "Mês \(targetMonth)"
 
-        return ("""
+        let result = """
         Resumo de \(monthName)/\(targetYear):
         Total gasto : \(ctx.formatCurrency(total)) (\(varStr))
         Transações  : \(monthTx.count)
 
         Top categorias:
         \(topCats.isEmpty ? "  Nenhuma despesa registrada." : topCats)
-        """)
+        """
+        AIToolLogger.log("resumo_do_mes.result", payload: result)
+        return result
     }
 }
 
@@ -616,14 +958,18 @@ struct VerificarMetasTool: Tool {
     let ctx: FinanceContext
 
     func call(arguments: Arguments) async throws -> String {
+        AIToolLogger.log(
+            "verificar_metas",
+            payload: "nomeMeta=\(arguments.nomeMeta ?? "nil")"
+        )
         var goals = ctx.goals
         if let nome = arguments.nomeMeta {
             goals = goals.filter { $0.title.localizedCaseInsensitiveContains(nome) }
         }
         guard !goals.isEmpty else {
-            return (
-                "Nenhuma meta cadastrada. Crie metas em Perfil > Metas de Gastos."
-            )
+            let result = "Nenhuma meta cadastrada. Crie metas em Perfil > Metas de Gastos."
+            AIToolLogger.log("verificar_metas.result", payload: result)
+            return result
         }
 
         let lines = goals.map { g -> String in
@@ -642,7 +988,8 @@ struct VerificarMetasTool: Tool {
             """
         }.joined(separator: "\n\n")
 
-        return (lines)
+        AIToolLogger.log("verificar_metas.result", payload: lines)
+        return lines
     }
 }
 
@@ -651,7 +998,7 @@ struct VerificarMetasTool: Tool {
 @available(iOS 26.0, *)
 struct ConsultarContasTool: Tool {
     let name        = "consultar_contas"
-    let description = "Retorna os saldos e tipo de cada conta cadastrada no app."
+    let description = "Retorna os detalhes principais de cada conta cadastrada no app, com foco em tipo e contexto de cartão."
 
     @Generable
     struct Arguments {
@@ -662,9 +1009,23 @@ struct ConsultarContasTool: Tool {
     let ctx: FinanceContext
 
     func call(arguments: Arguments) async throws -> String {
+        AIToolLogger.log("consultar_contas", payload: "nomeConta=\(arguments.nomeConta ?? "nil")")
+        func normalize(_ text: String) -> String {
+            text
+                .lowercased()
+                .replacingOccurrences(of: "[^a-z]", with: "", options: .regularExpression)
+                .folding(options: [.diacriticInsensitive], locale: .current)
+        }
+
         var accounts = ctx.accounts
         if let nome = arguments.nomeConta {
-            accounts = accounts.filter { $0.name.localizedCaseInsensitiveContains(nome) }
+            let query = normalize(nome)
+            accounts = accounts.filter { account in
+                let haystack = ([account.name, account.typeLabel, account.semanticType] + account.aliases)
+                    .map(normalize)
+                    .joined(separator: " ")
+                return haystack.contains(query)
+            }
         }
         guard !accounts.isEmpty else {
             return ("Nenhuma conta encontrada.")
@@ -672,11 +1033,74 @@ struct ConsultarContasTool: Tool {
 
         let lines = accounts.map { acc -> String in
             let def = acc.isDefault ? " (padrão)" : ""
-            return "• \(acc.name) [\(acc.typeLabel)]\(def): \(ctx.formatCurrency(acc.balance))"
+            let creditLimit = acc.creditLimit.map { " | limite: \(ctx.formatCurrency($0))" } ?? " | limite: Usuário não definiu um limite"
+            let availableCredit = if let creditLimitValue = acc.creditLimit, let estimatedBill = acc.estimatedBillAmount {
+                " | limite disponível estimado: \(ctx.formatCurrency(creditLimitValue - estimatedBill))"
+            } else {
+                ""
+            }
+            return "• \(acc.name) [\(acc.typeLabel)]\(def)\(creditLimit)\(availableCredit)"
         }.joined(separator: "\n")
+        AIToolLogger.log("consultar_contas.result", payload: lines)
+        return (lines)
+    }
+}
 
-        let total = accounts.reduce(0.0) { $0 + $1.balance }
-        return ("\(lines)\n\nSaldo total: \(ctx.formatCurrency(total))")
+@available(iOS 26.0, *)
+struct ConsultarEntidadesFinanceirasTool: Tool {
+    let name = "consultar_entidades_financeiras"
+    let description = """
+    Busca contexto financeiro fora das transações: contas, cartões com previsão de fechamento,
+    metas, projetos e família. Use para perguntas sobre cartão, fatura, conta corrente,
+    carteira, metas, projetos ou perfil familiar.
+    """
+
+    @Generable
+    struct Arguments {
+        @Guide(description: "Texto curto com o assunto buscado, como 'cartao', 'fatura', 'carteira', 'meta viagem', 'projeto casa'.")
+        var termo: String
+    }
+
+    let ctx: FinanceContext
+
+    func call(arguments: Arguments) async throws -> String {
+        AIToolLogger.log("consultar_entidades_financeiras", payload: "termo=\(arguments.termo)")
+        let block = LocalAIService.relevantEntitiesBlock(for: arguments.termo, context: ctx)
+        let accountDetails = ctx.accounts
+            .filter { account in
+                let haystack = ([account.name, account.typeLabel, account.semanticType] + account.aliases)
+                    .joined(separator: " ")
+                    .lowercased()
+                return haystack.contains(arguments.termo.lowercased())
+            }
+            .map { account in
+                var line = "• \(account.name) [\(account.typeLabel)]"
+                if let creditLimit = account.creditLimit {
+                    line += " | limite: \(ctx.formatCurrency(creditLimit))"
+                } else {
+                    line += " | limite: Usuário não definiu um limite"
+                }
+                if let estimatedBillAmount = account.estimatedBillAmount {
+                    line += " | fatura estimada: \(ctx.formatCurrency(estimatedBillAmount))"
+                    if let creditLimit = account.creditLimit {
+                        line += " | limite disponível estimado: \(ctx.formatCurrency(creditLimit - estimatedBillAmount))"
+                    }
+                }
+                if let daysUntilClosing = account.daysUntilClosing {
+                    line += " | dias para fechar: \(daysUntilClosing)"
+                }
+                return line
+            }
+            .joined(separator: "\n")
+
+        if accountDetails.isEmpty {
+            AIToolLogger.log("consultar_entidades_financeiras.result", payload: block)
+            return block
+        }
+
+        let result = "\(block)\n\n\(accountDetails)"
+        AIToolLogger.log("consultar_entidades_financeiras.result", payload: result)
+        return result
     }
 }
 
@@ -740,6 +1164,10 @@ struct CriarTransacaoTool: Tool {
     let box: DraftBox
 
     func call(arguments: Arguments) async throws -> String {
+        AIToolLogger.log(
+            "criar_transacao",
+            payload: "amount=\(arguments.amount) | categoryKey=\(arguments.categoryKey ?? "nil") | category=\(arguments.category) | placeName=\(arguments.placeName) | date=\(arguments.date ?? "nil") | accountName=\(arguments.accountName ?? "nil")"
+        )
         // Parse ISO date string → Date (nil = today)
         let txDate: Date?
         if let dateStr = arguments.date, !dateStr.isEmpty {
@@ -762,12 +1190,14 @@ struct CriarTransacaoTool: Tool {
             receiptImageData: nil
         )
         await box.set(draft)
-        return """
+        let result = """
         Draft created: \(ctx.formatCurrency(draft.amount)) — \
         \(draft.placeName) [\(draft.categoryName)].
         A confirmation card is now shown to the user. \
         Tell the user a confirmation card appeared and they can approve or cancel.
         """
+        AIToolLogger.log("criar_transacao.result", payload: result)
+        return result
     }
 }
 

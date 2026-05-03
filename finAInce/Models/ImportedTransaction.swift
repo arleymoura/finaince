@@ -11,6 +11,8 @@ struct ImportedTransaction: Identifiable {
     var isSelected: Bool = false
     var resolvedCategory:    Category? = nil
     var resolvedSubcategory: Category? = nil
+    var resolvedKind: TransactionKind = .regular
+    var resolvedDestinationAccountId: UUID? = nil
     var match: RecurringMatch? = nil
     var matchDecision: MatchDecision = .undecided
     var notes: String = ""

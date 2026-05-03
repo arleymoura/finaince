@@ -29,6 +29,7 @@ struct DashboardView: View {
     @State private var showCategoryDetails = false
     @State private var selectedCalendarDay: SelectedCalendarDay?
     @State private var transactionToEdit: Transaction?
+    @State private var selectedCreditCardForecast: CreditCardForecastSheetPayload?
     @State private var selectedInsightForAnalysis: Insight?
     @State private var insightAnalysisSharePayload: DashboardInsightAnalysisSharePayload?
     @State private var isGeneratingInsightAnalysis = false
@@ -89,7 +90,7 @@ struct DashboardView: View {
     @State private var cachedMonthTx: [Transaction] = []
     @State private var cachedPendingAll: [Transaction] = []
     @State private var cachedPendingByDay: [Date: [Transaction]] = [:]
-    @State private var cachedInsights: [Insight] = []
+    @State private var cachedSignalCards: [DashboardSignalCardItem] = []
     @State private var isInsightsLoading: Bool = true
     @State private var insightsReloadToken = UUID()
     @State private var insightsSkeletonPhase: CGFloat = -1.0
@@ -196,6 +197,15 @@ struct DashboardView: View {
     /// Não inclui previsão de metas.
     var totalExpensesRealized: Double {
         expensesByCategory.reduce(0) { $0 + $1.total }
+    }
+
+    private var visibleCreditCardAccounts: [Account] {
+        let cards = accounts.filter { $0.type == .creditCard }
+        if let selectedAccountId,
+           let selected = cards.first(where: { $0.id == selectedAccountId }) {
+            return [selected]
+        }
+        return cards
     }
 
     var monthTitle: String {
@@ -398,10 +408,17 @@ struct DashboardView: View {
             .sheet(item: $transactionToEdit) { transaction in
                 TransactionEditView(transaction: transaction)
             }
+            .sheet(item: $selectedCreditCardForecast) { payload in
+                CreditCardForecastSheet(
+                    payload: payload,
+                    currencyCode: currencyCode
+                )
+            }
             .sheet(item: $selectedCalendarDay) { selectedDay in
                 PendingDayTransactionsSheet(
                     date: selectedDay.date,
-                    transactions: pendingTransactions(for: selectedDay.date)
+                    transactions: selectedDay.transactions,
+                    alerts: selectedDay.alerts
                 )
             }
             .sheet(isPresented: $showCategoryDetails) {
@@ -604,13 +621,13 @@ struct DashboardView: View {
                     .tracking(0.4)
 
                 HStack(spacing: 0) {
-                    bankStep(icon: "iphone", label: "App\ndo banco")
+                    bankStep(icon: "iphone", label: t("dashboard.importStepBankApp"))
                     bankArrow
-                    bankStep(icon: "list.bullet.rectangle", label: "Extrato /\nHistórico")
+                    bankStep(icon: "list.bullet.rectangle", label: t("dashboard.importStepStatement"))
                     bankArrow
-                    bankStep(icon: "square.and.arrow.up", label: "Exportar /\nCompartilhar")
+                    bankStep(icon: "square.and.arrow.up", label: t("dashboard.importStepExport"))
                     bankArrow
-                    bankStep(icon: "arrow.down.circle.fill", label: "Abrir no\nfinAInce", accent: true)
+                    bankStep(icon: "arrow.down.circle.fill", label: t("dashboard.importStepOpen"), accent: true)
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -757,15 +774,18 @@ struct DashboardView: View {
     @ViewBuilder
     private var insightsSection: some View {
         ZStack {
-            if !cachedInsights.isEmpty {
+            if !cachedSignalCards.isEmpty {
                 InsightCarousel(
-                    insights: cachedInsights,
-                    badgeTitle: t("dashboard.quickAnalysisTitle"),
-                    ctaTitle: t(isAIConfigured ? "dashboard.viewMoreDetails" : "dashboard.viewWithAI")
-                ) { insight in
-                    handleInsightTap(insight)
+                    items: cachedSignalCards
+                ) { item in
+                    handleDashboardSignalTap(item)
                 }
                 .opacity(isInsightsLoading ? 0 : 1)
+            }
+
+            if !isInsightsLoading && cachedSignalCards.isEmpty {
+                insightsEmptyStateCard
+                    .transition(.opacity)
             }
 
             if isInsightsLoading {
@@ -775,6 +795,40 @@ struct DashboardView: View {
         }
         .frame(height: 166)
         .animation(.easeInOut(duration: 0.22), value: isInsightsLoading)
+    }
+
+    private var insightsEmptyStateCard: some View {
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.10))
+                    .frame(width: 42, height: 42)
+
+                Image(systemName: "sparkles")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(Color.accentColor)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(t("dashboard.insightsEmptyTitle"))
+                    .font(.subheadline.bold())
+                    .foregroundStyle(FinAInceColor.primaryText)
+
+                Text(t("dashboard.insightsEmptySubtitle"))
+                    .font(.caption)
+                    .foregroundStyle(FinAInceColor.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, maxHeight: 140, alignment: .leading)
+        .background(FinAInceColor.tintSurface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(FinAInceColor.borderSubtle, lineWidth: 1)
+        )
     }
 
     private var insightsSkeletonCard: some View {
@@ -791,7 +845,7 @@ struct DashboardView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("IA") //localizar
+                    Text(t("dashboard.aiLabel"))
                         .font(.caption2.bold())
                         .foregroundStyle(Color.accentColor)
                         .textCase(.uppercase)
@@ -870,6 +924,24 @@ struct DashboardView: View {
             )
         } else {
             selectedInsightForAnalysis = insight
+        }
+    }
+
+    private func handleDashboardSignalTap(_ item: DashboardSignalCardItem) {
+        switch item.source {
+        case .insight(let insight):
+            handleInsightTap(insight)
+        case .opportunity(let opportunity):
+            guard isAIConfigured else {
+                showAISetup = true
+                return
+            }
+            chatNavigationManager.openChat(
+                prompt: opportunity.chatPrompt,
+                deepAnalysisFocus: opportunity.title,
+                shouldOfferDeepAnalysis: true,
+                startNewChat: true
+            )
         }
     }
 
@@ -1130,7 +1202,7 @@ struct DashboardView: View {
         VStack(spacing: 18) {
             HStack(alignment: .top, spacing: 18) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(userName.isEmpty ? t("dashboard.title") : "Ola, \(userName)")
+                    Text(userName.isEmpty ? t("dashboard.title") : t("dashboard.greeting", userName))
                         .font(.system(size: 30, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                         .lineLimit(2)
@@ -1372,8 +1444,6 @@ struct DashboardView: View {
                     Spacer()
                 }
                 .padding(12)
-                .finInsetSurface(cornerRadius: 14)
-                .finSurfaceBorder(FinAInceColor.borderSubtle, cornerRadius: 14)
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(upcomingPendingTransactions.enumerated()), id: \.element.id) { index, transaction in
@@ -1390,8 +1460,6 @@ struct DashboardView: View {
                     }
                 }
                 .padding(14)
-                .finInsetSurface(cornerRadius: 14)
-                .finSurfaceBorder(FinAInceColor.borderSubtle, cornerRadius: 14)
             }
         }
     }
@@ -1421,8 +1489,6 @@ struct DashboardView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 14)
-            .finInsetSurface(cornerRadius: 14)
-            .finSurfaceBorder(FinAInceColor.borderSubtle, cornerRadius: 14)
         }
     }
 
@@ -1471,32 +1537,54 @@ struct DashboardView: View {
             if let date = day.date {
                 let transactions = pendingTransactions(for: date)
                 let hasPendingTransactions = !transactions.isEmpty
+                let alerts = calendarAlerts(for: date)
+                let hasCalendarAlerts = !alerts.isEmpty
                 let isToday = cal.isDateInToday(date)
                 Button {
-                    guard !transactions.isEmpty else { return }
-                    selectedCalendarDay = SelectedCalendarDay(date: date)
+                    guard hasPendingTransactions || hasCalendarAlerts else { return }
+                    selectedCalendarDay = SelectedCalendarDay(
+                        date: date,
+                        transactions: transactions,
+                        alerts: alerts
+                    )
                 } label: {
                     ZStack {
                         Circle()
-                            .fill(calendarDayBackgroundColor(isToday: isToday, hasPendingTransactions: hasPendingTransactions))
+                            .fill(
+                                calendarDayBackgroundColor(
+                                    isToday: isToday,
+                                    hasPendingTransactions: hasPendingTransactions,
+                                    hasCalendarAlerts: hasCalendarAlerts
+                                )
+                            )
                             .frame(width: 34, height: 34)
 
                         Text("\(cal.component(.day, from: date))")
-                            .font(.caption.weight(isToday || hasPendingTransactions ? .semibold : .regular))
-                            .foregroundStyle(calendarDayForegroundColor(isToday: isToday, hasPendingTransactions: hasPendingTransactions))
+                            .font(.caption.weight(isToday || hasPendingTransactions || hasCalendarAlerts ? .semibold : .regular))
+                            .foregroundStyle(
+                                calendarDayForegroundColor(
+                                    isToday: isToday,
+                                    hasPendingTransactions: hasPendingTransactions,
+                                    hasCalendarAlerts: hasCalendarAlerts
+                                )
+                            )
                     }
                     .frame(maxWidth: .infinity, minHeight: 36)
                     .overlay(
                         Circle()
                             .strokeBorder(
-                                isToday && !hasPendingTransactions ? Color.accentColor.opacity(0.35) : Color.clear,
-                                lineWidth: 1
+                                calendarDayBorderColor(
+                                    isToday: isToday,
+                                    hasPendingTransactions: hasPendingTransactions,
+                                    hasCalendarAlerts: hasCalendarAlerts
+                                ),
+                                lineWidth: hasPendingTransactions && hasCalendarAlerts ? 1.5 : 1
                             )
                     )
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .disabled(transactions.isEmpty)
+                .disabled(!hasPendingTransactions && !hasCalendarAlerts)
             } else {
                 Color.clear
                     .frame(minHeight: 36)
@@ -1504,21 +1592,52 @@ struct DashboardView: View {
         }
     }
 
-    private func calendarDayForegroundColor(isToday: Bool, hasPendingTransactions: Bool) -> Color {
+    private func calendarDayForegroundColor(isToday: Bool, hasPendingTransactions: Bool, hasCalendarAlerts: Bool) -> Color {
         if hasPendingTransactions { return .red }
+        if hasCalendarAlerts { return Color(red: 0.64, green: 0.45, blue: 0.05) }
         if isToday { return Color.accentColor }
         return .primary
     }
 
-    private func calendarDayBackgroundColor(isToday: Bool, hasPendingTransactions: Bool) -> Color {
+    private func calendarDayBackgroundColor(isToday: Bool, hasPendingTransactions: Bool, hasCalendarAlerts: Bool) -> Color {
         if hasPendingTransactions { return Color.red.opacity(0.14) }
+        if hasCalendarAlerts { return Color(red: 0.99, green: 0.94, blue: 0.74) }
         if isToday { return Color.accentColor.opacity(0.1) }
+        return Color.clear
+    }
+
+    private func calendarDayBorderColor(isToday: Bool, hasPendingTransactions: Bool, hasCalendarAlerts: Bool) -> Color {
+        if hasPendingTransactions && hasCalendarAlerts {
+            return Color(red: 0.9, green: 0.72, blue: 0.18).opacity(0.95)
+        }
+        if isToday && !hasPendingTransactions && !hasCalendarAlerts {
+            return Color.accentColor.opacity(0.35)
+        }
         return Color.clear
     }
 
     // O(1) lookup — data pre-built in refreshCache()
     private func pendingTransactions(for date: Date) -> [Transaction] {
         cachedPendingByDay[cal.startOfDay(for: date)] ?? []
+    }
+
+    private func calendarAlerts(for date: Date) -> [CalendarDayAlert] {
+        let day = cal.component(.day, from: date)
+        return visibleCreditCardAccounts.compactMap { account in
+            if account.ccPaymentDueDay == day {
+                return CalendarDayAlert(
+                    accountName: account.name,
+                    type: .paymentDue
+                )
+            }
+            if account.ccBillingEndDay == day {
+                return CalendarDayAlert(
+                    accountName: account.name,
+                    type: .billingClosing
+                )
+            }
+            return nil
+        }
     }
 
     // MARK: - Cache refresh
@@ -1530,7 +1649,7 @@ struct DashboardView: View {
     }
 
     private func refreshInsightsCache() {
-        cachedInsights = InsightEngine.compute(
+        let computedInsights = InsightEngine.compute(
             transactions: transactions,
             accounts: accounts,
             goals: goals,
@@ -1539,13 +1658,26 @@ struct DashboardView: View {
             currencyCode: currencyCode,
             selectedAccountId: selectedAccountId
         )
+        let scopedTransactions = selectedAccountId.map { accountId in
+            transactions.filter { $0.account?.id == accountId }
+        } ?? transactions
+        let opportunities = SavingsOpportunityService.computeOpportunities(
+            transactions: scopedTransactions,
+            month: selectedMonth,
+            year: selectedYear,
+            currencyCode: currencyCode
+        )
+        cachedSignalCards = buildDashboardSignalCards(
+            insights: computedInsights,
+            opportunities: opportunities
+        )
     }
 
     private func scheduleInsightsRefresh() {
         let token = UUID()
         insightsReloadToken = token
         isInsightsLoading = true
-        cachedInsights = []
+        cachedSignalCards = []
         let scopedTransactions = transactions
         let scopedAccounts = accounts
         let scopedGoals = goals
@@ -1567,10 +1699,53 @@ struct DashboardView: View {
 
             DispatchQueue.main.async {
                 guard token == insightsReloadToken else { return }
-                cachedInsights = computedInsights
+                let scopedOpportunityTransactions = scopedAccountId.map { accountId in
+                    scopedTransactions.filter { $0.account?.id == accountId }
+                } ?? scopedTransactions
+                let opportunities = SavingsOpportunityService.computeOpportunities(
+                    transactions: scopedOpportunityTransactions,
+                    month: scopedMonth,
+                    year: scopedYear,
+                    currencyCode: scopedCurrencyCode
+                )
+                cachedSignalCards = buildDashboardSignalCards(
+                    insights: computedInsights,
+                    opportunities: opportunities
+                )
                 isInsightsLoading = false
             }
         }
+    }
+
+    private func buildDashboardSignalCards(
+        insights: [Insight],
+        opportunities: [SavingsOpportunity]
+    ) -> [DashboardSignalCardItem] {
+        let opportunityCards = opportunities.map { opportunity in
+            DashboardSignalCardItem(
+                id: opportunity.id,
+                icon: opportunity.icon,
+                color: opportunity.color,
+                badgeTitle: "Oportunidade",
+                title: opportunity.title,
+                body: opportunity.action,
+                ctaTitle: t(isAIConfigured ? "dashboard.viewMoreDetails" : "dashboard.viewWithAI"),
+                source: .opportunity(opportunity)
+            )
+        }
+        let insightCards = insights.map { insight in
+            DashboardSignalCardItem(
+                id: insight.id,
+                icon: insight.icon,
+                color: insight.color,
+                badgeTitle: "Insight",
+                title: insight.title,
+                body: insight.body,
+                ctaTitle: t(isAIConfigured ? "dashboard.viewMoreDetails" : "dashboard.viewWithAI"),
+                source: .insight(insight)
+            )
+        }
+        return opportunityCards + insightCards
     }
 
     private func refreshCache() {
@@ -1635,10 +1810,10 @@ struct DashboardView: View {
             aiSetupCard
             calendarSection
             goalsSection
+            creditCardForecastSection
             projectsSection
             monthEvolutionChartCard
             chartSection
-            
         }
         .padding(.horizontal)
     }
@@ -1656,6 +1831,7 @@ struct DashboardView: View {
                     insightsSection
                     aiSetupCard
                     calendarSection
+                    creditCardForecastSection
                 }
                     .frame(maxWidth: .infinity)
 
@@ -1677,7 +1853,229 @@ struct DashboardView: View {
         .frame(maxWidth: .infinity)
     }
 
-    // MARK: - Goals
+    // MARK: - Credit Card
+
+    private var creditCardForecastSection: some View {
+        Group {
+            if !visibleCreditCardAccounts.isEmpty {
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "creditcard.and.123")
+                            .font(.subheadline)
+                            .foregroundStyle(Color.accentColor)
+                        Text(t("dashboard.cardForecastTitle"))
+                            .font(.headline)
+                            .foregroundStyle(FinAInceColor.primaryText)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+
+                    Divider()
+
+                    VStack(spacing: 10) {
+                        ForEach(Array(visibleCreditCardAccounts.enumerated()), id: \.element.id) { index, account in
+                            if let snapshot = creditCardBillingSnapshot(for: account) {
+                                Button {
+                                    selectedCreditCardForecast = CreditCardForecastSheetPayload(
+                                        account: account,
+                                        start: snapshot.start,
+                                        end: snapshot.end,
+                                        estimatedAmount: snapshot.estimatedAmount,
+                                        daysUntilClosing: snapshot.daysUntilClosing,
+                                        creditLimit: snapshot.creditLimit,
+                                        availableLimit: snapshot.availableLimit,
+                                        transactions: snapshot.transactions
+                                    )
+                                } label: {
+                                    creditCardForecastCard(
+                                        account: account,
+                                        snapshot: snapshot
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+
+                            if index < visibleCreditCardAccounts.count - 1 {
+                                Divider()
+                                    .padding(.horizontal, 14)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 12)
+                }
+                .modifier(DashboardCardModifier(
+                    fillColor: .white,
+                    cornerRadius: dashboardCardCornerRadius,
+                    showsShadow: isRegular
+                ))
+            }
+        }
+    }
+
+    private func creditCardBillingSnapshot(for account: Account) -> CreditCardBillingSnapshot? {
+        guard account.type == .creditCard,
+              let cycle = account.billingCycleRange(containing: Date(), calendar: cal) else { return nil }
+
+        let billingTransactions = transactions
+            .filter {
+                $0.account?.id == account.id &&
+                $0.type == .expense &&
+                $0.date >= cycle.start &&
+                $0.date < cycle.nextStart
+            }
+            .sorted { $0.date > $1.date }
+
+        let estimatedAmount = billingTransactions.reduce(0) { $0 + $1.amount }
+        let startOfToday = cal.startOfDay(for: Date())
+        let startOfEnd = cal.startOfDay(for: cycle.end)
+        let daysUntilClosing = max(0, cal.dateComponents([.day], from: startOfToday, to: startOfEnd).day ?? 0)
+        let creditLimit = account.ccCreditLimit
+        let availableLimit = creditLimit.map { $0 - estimatedAmount }
+
+        return CreditCardBillingSnapshot(
+            start: cycle.start,
+            end: cycle.end,
+            estimatedAmount: estimatedAmount,
+            daysUntilClosing: daysUntilClosing,
+            creditLimit: creditLimit,
+            availableLimit: availableLimit,
+            transactions: billingTransactions
+        )
+    }
+
+    private func creditCardForecastCard(
+        account: Account,
+        snapshot: CreditCardBillingSnapshot
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                HStack(spacing: 10) {
+                    Image(systemName: account.icon)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 38, height: 38)
+                        .background(
+                            LinearGradient(
+                                colors: [Color(hex: account.color), Color(hex: account.color).opacity(0.75)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(account.name)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(FinAInceColor.primaryText)
+                        Text(t(
+                            "dashboard.cardForecastWindow",
+                            snapshot.start.formatted(.dateTime.day().month(.abbreviated).locale(LanguageManager.shared.effective.locale)),
+                            snapshot.end.formatted(.dateTime.day().month(.abbreviated).locale(LanguageManager.shared.effective.locale))
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(FinAInceColor.secondaryText)
+                    }
+                }
+
+                Spacer()
+
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(t("dashboard.cardForecastEstimated"))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(FinAInceColor.secondaryText)
+                    Text(snapshot.estimatedAmount.asCurrency(currencyCode))
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(.red)
+                }
+            }
+
+            if let ratio = snapshot.utilizationRatio {
+                let tone = creditLimitUsageTone(for: ratio)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 10) {
+                        dashboardLimitPill(
+                            title: t("dashboard.cardAvailableLimit"),
+                            value: (snapshot.availableLimit ?? 0).asCurrency(currencyCode),
+                            tone: .green
+                        )
+                        dashboardLimitPill(
+                            title: t("dashboard.cardLimitProgress"),
+                            value: t("dashboard.cardLimitProgressValue", Int(ratio * 100)),
+                            tone: tone
+                        )
+                    }
+
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(tone.opacity(0.12))
+                                .frame(height: 7)
+
+                            Capsule()
+                                .fill(tone)
+                                .frame(width: max(10, geometry.size.width * ratio), height: 7)
+                        }
+                    }
+                    .frame(height: 7)
+                }
+            } else {
+                HStack(spacing: 0) {
+                    forecastMetricItem(
+                        title: t("dashboard.cardAvailableLimit"),
+                        value: t("dashboard.cardLimitNotDefined"),
+                        tone: .secondary
+                    )
+                }
+            }
+
+            HStack(spacing: 0) {
+                forecastMetricItem(
+                    title: t("dashboard.cardForecastDaysLeft"),
+                    value: t("dashboard.cardForecastDaysValue", snapshot.daysUntilClosing),
+                    tone: .orange
+                )
+                Divider().frame(height: 32)
+                forecastMetricItem(
+                    title: t("account.creditLimit"),
+                    value: snapshot.creditLimit.map { $0.asCurrency(currencyCode) } ?? t("dashboard.cardLimitNotDefined"),
+                    tone: .secondary
+                )
+            }
+        }
+        .padding(14)
+        .padding(.horizontal, 12)
+    }
+
+    private func dashboardLimitPill(title: String, value: String, tone: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(FinAInceColor.secondaryText)
+            Text(value)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(tone)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(tone.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func forecastMetricItem(title: String, value: String, tone: Color) -> some View {
+        VStack(spacing: 4) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(FinAInceColor.secondaryText)
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(tone)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+    }
 
     private var goalsSection: some View {
         VStack(spacing: 0) {
@@ -1741,7 +2139,7 @@ struct DashboardView: View {
             }
         }
         .modifier(DashboardCardModifier(
-            fillColor: dashboardCardFillColor,
+            fillColor: .white,
             cornerRadius: dashboardCardCornerRadius,
             showsShadow: isRegular
         ))
@@ -1798,9 +2196,7 @@ struct DashboardView: View {
 
     private func matchesGoal(_ tx: Transaction, goal: Goal) -> Bool {
         guard tx.type == .expense else { return false }
-        guard let catGoal = goal.category else { return true }
-        let root = tx.category?.parent ?? tx.category
-        return root?.id == catGoal.id
+        return goal.matches(tx)
     }
 
     // MARK: - Projects
@@ -1885,7 +2281,7 @@ struct DashboardView: View {
                     }
                 }
                 .modifier(DashboardCardModifier(
-                    fillColor: dashboardCardFillColor,
+                    fillColor: .white,
                     cornerRadius: dashboardCardCornerRadius,
                     showsShadow: isRegular
                 ))
@@ -2039,7 +2435,7 @@ struct DashboardView: View {
         }
         .padding(16)
         .modifier(DashboardCardModifier(
-            fillColor: dashboardCardFillColor,
+            fillColor: .white,
             cornerRadius: dashboardCardCornerRadius,
             showsShadow: isRegular
         ))
@@ -2115,7 +2511,7 @@ struct DashboardView: View {
             }
         }
         .modifier(DashboardCardModifier(
-            fillColor: dashboardCardFillColor,
+            fillColor: .white,
             cornerRadius: dashboardCardCornerRadius,
             showsShadow: isRegular
         ))
@@ -2245,7 +2641,7 @@ struct DashboardView: View {
             .padding(16)
         }
         .modifier(DashboardCardModifier(
-            fillColor: dashboardCardFillColor,
+            fillColor: .white,
             cornerRadius: dashboardCardCornerRadius,
             showsShadow: isRegular
         ))
@@ -2288,8 +2684,21 @@ private struct DashboardCumulativePoint: Identifiable {
 
 private struct SelectedCalendarDay: Identifiable {
     let date: Date
+    let transactions: [Transaction]
+    let alerts: [CalendarDayAlert]
 
     var id: Date { date }
+}
+
+private struct CalendarDayAlert: Identifiable {
+    enum Kind {
+        case paymentDue
+        case billingClosing
+    }
+
+    let id = UUID()
+    let accountName: String
+    let type: Kind
 }
 
 private struct DashboardCalendarDay: Identifiable {
@@ -2356,6 +2765,7 @@ private struct UpcomingExpenseRow: View {
 private struct PendingDayTransactionsSheet: View {
     let date: Date
     let transactions: [Transaction]
+    let alerts: [CalendarDayAlert]
 
     @Environment(\.dismiss) private var dismiss
     @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
@@ -2369,6 +2779,10 @@ private struct PendingDayTransactionsSheet: View {
         transactions.reduce(0) { $0 + $1.amount }
     }
 
+    private var alertSummary: String {
+        t(alerts.count == 1 ? "dashboard.cardAlertSingular" : "dashboard.cardAlertPlural", alerts.count)
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -2377,27 +2791,72 @@ private struct PendingDayTransactionsSheet: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(title)
                                 .font(.headline)
-                            Text(t(transactions.count == 1 ? "dashboard.pendingExpenseSingular" : "dashboard.pendingExpensePlural", transactions.count))
-                                .font(.subheadline)
-                                .foregroundStyle(FinAInceColor.secondaryText)
+                            if !transactions.isEmpty {
+                                Text(t(transactions.count == 1 ? "dashboard.pendingExpenseSingular" : "dashboard.pendingExpensePlural", transactions.count))
+                                    .font(.subheadline)
+                                    .foregroundStyle(FinAInceColor.secondaryText)
+                            }
+                            if !alerts.isEmpty {
+                                Text(alertSummary)
+                                    .font(.subheadline)
+                                    .foregroundStyle(Color(red: 0.64, green: 0.45, blue: 0.05))
+                            }
                         }
 
                         Spacer()
 
-                        Text(total.asCurrency(currencyCode))
-                            .font(.headline)
-                            .foregroundStyle(.red)
+                        if !transactions.isEmpty {
+                            Text(total.asCurrency(currencyCode))
+                                .font(.headline)
+                                .foregroundStyle(.red)
+                        }
                     }
                     .padding(.vertical, 4)
                 }
 
-                Section(t("dashboard.transactions")) {
-                    ForEach(transactions) { transaction in
-                        TransactionRowView(transaction: transaction, showAccount: true)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                transactionToEdit = transaction
+                if !alerts.isEmpty {
+                    Section(t("dashboard.cardAlerts")) {
+                        ForEach(alerts) { alert in
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color(red: 0.99, green: 0.94, blue: 0.74))
+                                        .frame(width: 34, height: 34)
+                                    Image(systemName: alert.type == .paymentDue ? "creditcard.and.123" : "calendar.badge.clock")
+                                        .font(.subheadline)
+                                        .foregroundStyle(Color(red: 0.64, green: 0.45, blue: 0.05))
+                                }
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(alert.type == .paymentDue ? t("dashboard.cardAlertPaymentTitle") : t("dashboard.cardAlertClosingTitle"))
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(FinAInceColor.primaryText)
+                                    Text(alert.accountName)
+                                        .font(.caption)
+                                        .foregroundStyle(FinAInceColor.secondaryText)
+                                }
                             }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+
+                if !transactions.isEmpty {
+                    Section(t("dashboard.transactions")) {
+                        ForEach(transactions) { transaction in
+                            TransactionRowView(transaction: transaction, showAccount: true)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    transactionToEdit = transaction
+                                }
+                        }
+                    }
+                } else if !alerts.isEmpty {
+                    Section {
+                        Text(t("dashboard.cardAlertNoTransactions"))
+                            .font(.subheadline)
+                            .foregroundStyle(FinAInceColor.secondaryText)
+                            .padding(.vertical, 4)
                     }
                 }
             }
@@ -2507,46 +2966,18 @@ struct AccountExpenseBlock: View {
 
     var billingInfo: (total: Double, start: Date, end: Date)? {
         guard account.type == .creditCard,
-              let startDay = account.ccBillingStartDay,
-              let endDay   = account.ccBillingEndDay else { return nil }
-
-        let now = Date()
-        let todayDay = cal.component(.day, from: now)
-
-        let cycleStartComponents: DateComponents
-        if todayDay >= startDay {
-            cycleStartComponents = DateComponents(
-                year:  cal.component(.year,  from: now),
-                month: cal.component(.month, from: now),
-                day:   startDay
-            )
-        } else {
-            let prev = cal.date(byAdding: .month, value: -1, to: now)!
-            cycleStartComponents = DateComponents(
-                year:  cal.component(.year,  from: prev),
-                month: cal.component(.month, from: prev),
-                day:   startDay
-            )
-        }
-
-        guard let cycleStart = cal.date(from: cycleStartComponents) else { return nil }
-        let cycleEndBase = cal.date(byAdding: .month, value: 1, to: cycleStart)!
-        guard let cycleEnd = cal.date(from: DateComponents(
-            year:  cal.component(.year,  from: cycleEndBase),
-            month: cal.component(.month, from: cycleEndBase),
-            day:   endDay
-        )) else { return nil }
+              let cycle = account.billingCycleRange(containing: Date(), calendar: cal) else { return nil }
 
         let cycleTotal = allTransactions
             .filter {
                 $0.account?.id == account.id &&
                 $0.type == .expense &&
-                $0.date >= cycleStart &&
-                $0.date <= cycleEnd
+                $0.date >= cycle.start &&
+                $0.date < cycle.nextStart
             }
             .reduce(0) { $0 + $1.amount }
 
-        return (cycleTotal, cycleStart, cycleEnd)
+        return (cycleTotal, cycle.start, cycle.end)
     }
 
     var body: some View {
@@ -2617,8 +3048,8 @@ struct AccountExpenseBlock: View {
                                     .foregroundStyle(FinAInceColor.secondaryText)
                                 Text(t(
                                     "dashboard.invoiceWindow",
-                                    billing.start.formatted(.dateTime.day().month(.abbreviated)),
-                                    billing.end.formatted(.dateTime.day().month(.abbreviated))
+                                    billing.start.formatted(.dateTime.day().month(.abbreviated).locale(LanguageManager.shared.effective.locale)),
+                                    billing.end.formatted(.dateTime.day().month(.abbreviated).locale(LanguageManager.shared.effective.locale))
                                 ))
                                     .font(.caption)
                                     .foregroundStyle(FinAInceColor.secondaryText)
@@ -2627,19 +3058,19 @@ struct AccountExpenseBlock: View {
                             .padding(.horizontal, 14)
 
                             HStack(spacing: 0) {
-                                accountStatItem(label: "Realizado", amount: paid, color: .primary)
+                                accountStatItem(label: t("dashboard.done"), amount: paid, color: .primary)
                                 Divider().frame(height: 32)
-                                accountStatItem(label: "A pagar", amount: pending, color: .orange)
+                                accountStatItem(label: t("dashboard.toPay"), amount: pending, color: .orange)
                                 Divider().frame(height: 32)
-                                accountStatItem(label: "Fatura est.", amount: billing.total, color: .red)
+                                accountStatItem(label: t("dashboard.invoice"), amount: billing.total, color: .red)
                             }
                             .padding(.horizontal, 14)
                         }
                     } else {
                         HStack(spacing: 0) {
-                            accountStatItem(label: "Realizado", amount: paid, color: .primary)
+                            accountStatItem(label: t("dashboard.done"), amount: paid, color: .primary)
                             Divider().frame(height: 32)
-                            accountStatItem(label: "Previsto", amount: forecast, color: .orange)
+                            accountStatItem(label: t("dashboard.forecast"), amount: forecast, color: .orange)
                         }
                         .padding(.horizontal, 14)
                     }
@@ -2804,6 +3235,376 @@ struct MonthSelectorView: View {
 private struct DashboardInsightAnalysisSharePayload: Identifiable {
     let id = UUID()
     let fileURL: URL
+}
+
+private struct CreditCardBillingSnapshot {
+    let start: Date
+    let end: Date
+    let estimatedAmount: Double
+    let daysUntilClosing: Int
+    let creditLimit: Double?
+    let availableLimit: Double?
+    let transactions: [Transaction]
+
+    var utilizationRatio: Double? {
+        guard let creditLimit, creditLimit > 0 else { return nil }
+        return min(max(estimatedAmount / creditLimit, 0), 1)
+    }
+}
+
+private struct CreditCardForecastSheetPayload: Identifiable {
+    let id = UUID()
+    let account: Account
+    let start: Date
+    let end: Date
+    let estimatedAmount: Double
+    let daysUntilClosing: Int
+    let creditLimit: Double?
+    let availableLimit: Double?
+    let transactions: [Transaction]
+}
+
+private func creditLimitUsageTone(for ratio: Double) -> Color {
+    switch ratio {
+    case ..<0.5:
+        return .green
+    case ..<0.8:
+        return .orange
+    default:
+        return .red
+    }
+}
+
+private struct CreditCardForecastSheet: View {
+    let payload: CreditCardForecastSheetPayload
+    let currencyCode: String
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    @State private var selectedTransaction: Transaction?
+
+    private var groupedTransactions: [(date: Date, transactions: [Transaction])] {
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: payload.transactions) { calendar.startOfDay(for: $0.date) }
+        return grouped
+            .map { ($0.key, $0.value.sorted { $0.date > $1.date }) }
+            .sorted { $0.0 > $1.0 }
+    }
+
+    private var progressRatio: Double {
+        let calendar = Calendar.current
+        let totalDays = max(1, calendar.dateComponents([.day], from: payload.start, to: payload.end).day ?? 1)
+        let elapsedDays = max(0, totalDays - payload.daysUntilClosing)
+        return min(max(Double(elapsedDays) / Double(totalDays), 0), 1)
+    }
+
+    private var limitUsageRatio: Double? {
+        guard let creditLimit = payload.creditLimit, creditLimit > 0 else { return nil }
+        return min(max(payload.estimatedAmount / creditLimit, 0), 1)
+    }
+
+    private var closingDayValue: String {
+        if let day = payload.account.billingClosingDay {
+            return String(day)
+        }
+        return "—"
+    }
+
+    private var paymentDayValue: String {
+        if let day = payload.account.ccPaymentDueDay {
+            return String(day)
+        }
+        return "—"
+    }
+
+    private var forecastWindowValue: String {
+        t(
+            "dashboard.invoiceWindow",
+            payload.start.formatted(.dateTime.day().month(.abbreviated).locale(LanguageManager.shared.effective.locale)),
+            payload.end.formatted(.dateTime.day().month(.abbreviated).locale(LanguageManager.shared.effective.locale))
+        )
+    }
+
+    var body: some View {
+        NavigationStack {
+            
+            Section
+            {
+                
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        forecastHeaderBadge(
+                            icon: "calendar.badge.clock",
+                            text: forecastWindowValue
+                        )
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+
+                    VStack(spacing: 10) {
+                        HStack(spacing: 10) {
+                            summaryMetricCard(
+                                title: t("dashboard.cardForecastEstimated"),
+                                value: payload.estimatedAmount.asCurrency(currencyCode),
+                                icon: "eurosign.circle",
+                                tone: .red
+                            )
+                            
+                            daysRemainingSummaryCard(
+                                title: t("dashboard.cardForecastDaysLeft"),
+                                value: t("dashboard.cardForecastDaysValue", payload.daysUntilClosing),
+                                progress: progressRatio
+                            )
+                        }
+                        .frame(maxWidth: .infinity, alignment: .center)
+
+                        GeometryReader { geometry in
+                            let spacing: CGFloat = 10
+                            let unitWidth = (geometry.size.width - (spacing * 2)) / 3
+
+                            HStack(alignment: .top, spacing: spacing) {
+                                summaryMetricCard(
+                                    title: t("dashboard.cardClosingDay"),
+                                    value: closingDayValue,
+                                    icon: "calendar.badge.clock",
+                                    tone: .primary
+                                )
+                                .frame(width: unitWidth)
+
+                                limitUsageSummaryCard()
+                                    .frame(width: (unitWidth * 2) + spacing, alignment: .leading)
+                            }
+                        }
+                        .frame(height: 96)
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 8)
+                .padding(.bottom, 16)
+            }
+            List {
+                           
+                if payload.transactions.isEmpty {
+                    Section(t("dashboard.transactions")) {
+                        Text(t("dashboard.cardForecastSheetEmpty"))
+                            .font(.subheadline)
+                            .foregroundStyle(FinAInceColor.secondaryText)
+                    }
+                } else {
+                    ForEach(groupedTransactions, id: \.date) { group in
+                        Section {
+                            ForEach(group.transactions) { transaction in
+                                forecastTransactionButton(transaction)
+                            }
+                        } header: {
+                            sectionHeaderDate(group.date)
+                        }
+                    }
+                }
+            }
+            .sheet(item: $selectedTransaction) { transaction in
+                TransactionEditView(transaction: transaction)
+            }
+            .navigationTitle(t("dashboard.cardForecastSheetTitleWithName", payload.account.name))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(t("common.close")) { dismiss() }
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            dismiss()
+                            if let url = URL(string: "finaince://account/\(payload.account.id.uuidString)") {
+                                DispatchQueue.main.async {
+                                    openURL(url)
+                                }
+                            }
+                        } label: {
+                            Label(t("dashboard.viewCardDetails"), systemImage: "creditcard")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                }
+            }
+        }
+    }
+
+    private func creditCardForecastTransactionRow(_ transaction: Transaction) -> some View {
+        TransactionRowView(transaction: transaction, showAccount: false)
+            .padding(.vertical, 2)
+    }
+
+    private func summaryMetricCard(title: String, value: String, icon: String, tone: Color) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            summaryMetricIcon(icon: icon, tone: tone == .primary ? .blue : tone)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(FinAInceColor.secondaryText)
+                    .lineLimit(2)
+                Text(value)
+                    .font(.system(.title3, design: .rounded).weight(.bold))
+                    .foregroundStyle(tone == .primary ? FinAInceColor.primaryText : tone)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
+        .padding(12)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func daysRemainingSummaryCard(title: String, value: String, progress: Double) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            daysRemainingIcon(progress: progress)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(FinAInceColor.secondaryText)
+                Text(value)
+                    .font(.system(.title3, design: .rounded).weight(.bold))
+                    .foregroundStyle(FinAInceColor.primaryText)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
+        .padding(12)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func summaryMetricIcon(icon: String, tone: Color) -> some View {
+        Image(systemName: icon)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(tone)
+            .frame(width: 34, height: 34)
+            .background(tone.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func daysRemainingIcon(progress: Double) -> some View {
+        ZStack {
+            Circle()
+                .stroke(Color.blue.opacity(0.14), lineWidth: 5)
+            Circle()
+                .trim(from: 0, to: max(0.06, progress))
+                .stroke(Color.blue, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            Image(systemName: "calendar")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Color.blue)
+        }
+        .frame(width: 34, height: 34)
+    }
+
+    @ViewBuilder
+    private func limitUsageSummaryCard() -> some View {
+        if let ratio = limitUsageRatio {
+            let tone = creditLimitUsageTone(for: ratio)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text(t("dashboard.cardLimitProgress"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(FinAInceColor.secondaryText)
+
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(t("dashboard.cardAvailableLimit"))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(FinAInceColor.secondaryText)
+                        Text((payload.availableLimit ?? 0).asCurrency(currencyCode))
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.green)
+                    }
+                    Spacer(minLength: 12)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text(t("dashboard.cardLimitProgressValue", Int(ratio * 100)))
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(tone)
+                        Text(payload.creditLimit?.asCurrency(currencyCode) ?? t("dashboard.cardLimitNotDefined"))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(FinAInceColor.secondaryText)
+                    }
+                }
+
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.12))
+                            .frame(height: 8)
+                        Capsule()
+                            .fill(tone)
+                            .frame(width: max(10, geometry.size.width * ratio), height: 8)
+                    }
+                }
+                .frame(height: 8)
+            }
+            .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
+            .padding(12)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(t("dashboard.cardLimitProgress"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(FinAInceColor.secondaryText)
+
+                Spacer(minLength: 0)
+
+                HStack {
+                    Text(t("account.creditLimit"))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(FinAInceColor.secondaryText)
+                    Spacer()
+                    Text(t("dashboard.cardLimitNotDefined"))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(FinAInceColor.secondaryText)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
+            .padding(12)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+
+    private func forecastHeaderBadge(icon: String, text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.blue)
+
+            Text(text)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(FinAInceColor.primaryText)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.blue.opacity(0.08))
+        .clipShape(Capsule())
+    }
+
+    private func forecastTransactionButton(_ transaction: Transaction) -> some View {
+        Button {
+            selectedTransaction = transaction
+        } label: {
+            creditCardForecastTransactionRow(transaction)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func sectionHeaderDate(_ date: Date) -> some View {
+        Text(date.formatted(.dateTime.day().month(.wide).year().locale(LanguageManager.shared.effective.locale)))
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(FinAInceColor.secondaryText)
+    }
 }
 
 private struct DashboardInsightAnalysisEducationDialog: View {

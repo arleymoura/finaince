@@ -58,4 +58,24 @@ extension Goal {
         default: return emoji.isEmpty ? "target" : emoji
         }
     }
+
+    var rootCategory: Category? {
+        category?.rootCategory ?? category
+    }
+
+    var scopedSubcategory: Category? {
+        category?.parent == nil ? nil : category
+    }
+
+    func matches(_ transaction: Transaction) -> Bool {
+        guard let goalCategory = category else { return true }
+
+        if goalCategory.parent != nil {
+            return transaction.subcategory?.persistentModelID == goalCategory.persistentModelID
+        }
+
+        let root = transaction.category?.parent ?? transaction.category
+        return root?.persistentModelID == goalCategory.persistentModelID
+            || transaction.category?.persistentModelID == goalCategory.persistentModelID
+    }
 }

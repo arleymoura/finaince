@@ -142,6 +142,8 @@ struct OnboardingView: View {
     @State private var budgetGoals: [BudgetGoalItem] = []
     @State private var hasCreditCard     = false
     @State private var cardClosingDay    = 5
+    @State private var cardPaymentDueDay = 12
+    @State private var cardLimitText     = ""
     @State private var cardName          = t("ob.step5.cardDefault")
     @State private var hasSetupAI        = false
     @State private var isFinishing       = false
@@ -219,6 +221,8 @@ struct OnboardingView: View {
                 OnboardingAccountStep(
                     hasCreditCard:  $hasCreditCard,
                     cardClosingDay: $cardClosingDay,
+                    cardPaymentDueDay: $cardPaymentDueDay,
+                    cardLimitText: $cardLimitText,
                     cardName:       $cardName,
                     progress: progress(for: 5),
                     onBack: { back() },
@@ -304,17 +308,29 @@ struct OnboardingView: View {
         checking.family = family
         modelContext.insert(checking)
 
+        let wallet = Account(
+            name: t("account.walletDefault"),
+            type: .cash,
+            icon: "wallet.bifold.fill",
+            color: "#34C759",
+            isDefault: false
+        )
+        wallet.family = family
+        modelContext.insert(wallet)
+
         // 4. Create credit card if selected
         if hasCreditCard {
             let closingDay = cardClosingDay
-            let startDay   = closingDay < 28 ? closingDay + 1 : 1
+            let dueDay     = cardPaymentDueDay
             let cc = Account(
                 name: cardName.trimmingCharacters(in: .whitespaces).isEmpty ? t("ob.step5.cardFallback") : cardName,
                 type: .creditCard,
                 icon: "creditcard.fill",
                 color: "#FF9500",
-                ccBillingStartDay: startDay,
-                ccBillingEndDay: closingDay
+                ccBillingStartDay: closingDay < 28 ? closingDay + 1 : 1,
+                ccBillingEndDay: closingDay,
+                ccPaymentDueDay: dueDay,
+                ccCreditLimit: parsedOnboardingCardLimit
             )
             cc.family = family
             modelContext.insert(cc)
@@ -370,6 +386,15 @@ struct OnboardingView: View {
         var comps = Calendar.current.dateComponents([.year, .month], from: Date())
         comps.day = 1
         return Calendar.current.date(from: comps) ?? Date()
+    }
+
+    private var parsedOnboardingCardLimit: Double? {
+        let sanitized = cardLimitText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ".", with: "")
+            .replacingOccurrences(of: ",", with: ".")
+        guard !sanitized.isEmpty else { return nil }
+        return Double(sanitized)
     }
 }
 
@@ -1242,13 +1267,16 @@ private struct OnboardingBudgetStep: View {
 
                 // Context card
                 VStack(spacing: 10) {
-                    HStack(spacing: 10) {
+                    HStack(alignment: .top, spacing: 10) {
                         Image(systemName: "lock.fill")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Text(t("ob.step3.privacyCard"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
                     }
                 }
                 .padding(14)
@@ -1422,8 +1450,11 @@ private struct OnboardingGoalsStep: View {
 
 private struct OnboardingAccountStep: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
     @Binding var hasCreditCard: Bool
     @Binding var cardClosingDay: Int
+    @Binding var cardPaymentDueDay: Int
+    @Binding var cardLimitText: String
     @Binding var cardName: String
     let progress: Double
     let onBack: () -> Void
@@ -1511,6 +1542,44 @@ private struct OnboardingAccountStep: View {
                                 Spacer()
                                 Stepper(t("ob.step5.dayPrefix", cardClosingDay), value: $cardClosingDay, in: 1...28)
                                     .fixedSize()
+                            }
+                            .padding(.horizontal, 16).padding(.vertical, 12)
+
+                            Divider().padding(.leading, 78)
+
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(t("ob.step5.paymentDueDay"))
+                                        .font(.subheadline)
+                                    Text(t("ob.step5.paymentDueDayDesc"))
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Stepper(t("ob.step5.dayPrefix", cardPaymentDueDay), value: $cardPaymentDueDay, in: 1...31)
+                                    .fixedSize()
+                            }
+                            .padding(.horizontal, 16).padding(.vertical, 12)
+
+                            Divider().padding(.leading, 78)
+
+                            HStack(spacing: 10) {
+                                Text(t("account.creditLimit"))
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 118, alignment: .leading)
+
+                                Spacer()
+
+                                Text((CurrencyOption(rawValue: currencyCode)
+                                      ?? CurrencyOption(rawValue: CurrencyOption.defaultCode)
+                                      ?? .usd).symbol)
+                                    .font(.body.bold())
+                                    .foregroundStyle(.secondary)
+
+                                TextField("0.00", text: $cardLimitText)
+                                    .keyboardType(.decimalPad)
+                                    .multilineTextAlignment(.trailing)
+                                    .frame(width: 96)
                             }
                             .padding(.horizontal, 16).padding(.vertical, 12)
 

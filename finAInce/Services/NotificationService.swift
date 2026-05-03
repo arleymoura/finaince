@@ -34,6 +34,7 @@ final class NotificationService {
     /// Deve ser chamado no launch e ao entrar em foreground.
     func scheduleAll(context: ModelContext) {
         schedulePaymentNotifications(context: context)
+        scheduleCreditCardNotifications(context: context)
         checkGoalAlerts(context: context)
     }
 
@@ -60,8 +61,8 @@ final class NotificationService {
 
         for tx in upcoming {
             let content           = UNMutableNotificationContent()
-            content.title         = "Pagamento pendente"
-            content.body          = "\(tx.placeName ?? "Despesa") · \(tx.amount.asCurrency())"
+            content.title         = t("notif.pendingExpenseTitle")
+            content.body          = "\(tx.placeName ?? t("notif.pendingExpenseFallback")) · \(tx.amount.asCurrency())"
             content.sound         = .default
             content.interruptionLevel = .timeSensitive
 
@@ -80,7 +81,28 @@ final class NotificationService {
         }
     }
 
-    // MARK: - 2. Alerta de Meta Próxima
+    // MARK: - 2. Alertas de Cartão de Crédito
+
+    /// Agenda lembretes da véspera de fechamento e do vencimento da fatura.
+    func scheduleCreditCardNotifications(context: ModelContext) {
+        removeAll(prefix: "card-closing-")
+        removeAll(prefix: "card-due-")
+
+        guard UserDefaults.standard.bool(forKey: "notif.creditCardCycle") else { return }
+        guard let accounts = try? context.fetch(FetchDescriptor<Account>()) else { return }
+
+        let calendar = Calendar.current
+        let now = calendar.startOfDay(for: Date())
+        let limit = calendar.date(byAdding: .day, value: 60, to: now) ?? now
+        let creditCards = accounts.filter { $0.type == .creditCard }
+
+        for account in creditCards {
+            scheduleClosingReminder(for: account, calendar: calendar, now: now, limit: limit)
+            scheduleDueReminder(for: account, calendar: calendar, now: now, limit: limit)
+        }
+    }
+
+    // MARK: - 3. Alerta de Meta Próxima
 
     /// Dispara notificação imediata quando os gastos atingem ≥80% de uma meta ativa.
     /// Cada meta só notifica uma vez por mês (rastreado via UserDefaults).
@@ -117,8 +139,13 @@ final class NotificationService {
             guard pct >= 0.8 else { continue }
 
             let content           = UNMutableNotificationContent()
-            content.title         = "Meta próxima do limite ⚠️"
-            content.body          = "'\(goal.title)' está em \(Int(pct * 100))% — limite \(goal.targetAmount.asCurrency())"
+            content.title         = t("notif.goalLimitTitle")
+            content.body          = String(
+                format: t("notif.goalLimitBody"),
+                goal.title,
+                Int(pct * 100),
+                goal.targetAmount.asCurrency()
+            )
             content.sound         = .default
 
             // Dispara após 1 segundo (notificação imediata)
@@ -146,10 +173,100 @@ final class NotificationService {
         }
     }
 
+    private func scheduleClosingReminder(for account: Account, calendar: Calendar, now: Date, limit: Date) {
+        guard let closingDay = account.ccBillingEndDay else { return }
+
+        for monthStart in upcomingMonthStarts(from: now, calendar: calendar) {
+            guard
+                let closingDate = clippedDate(for: closingDay, in: monthStart, calendar: calendar),
+                let reminderDateRaw = calendar.date(byAdding: .day, value: -1, to: closingDate)
+            else { continue }
+
+            let reminderDate = calendar.startOfDay(for: reminderDateRaw)
+            guard reminderDate >= now, reminderDate <= limit else { continue }
+
+            let content = UNMutableNotificationContent()
+            content.title = t("notif.cardClosingSoonTitle")
+            content.body = String(format: t("notif.cardClosingSoonBody"), account.name)
+            content.sound = .default
+            content.interruptionLevel = .active
+
+            var comps = calendar.dateComponents([.year, .month, .day], from: reminderDate)
+            comps.hour = 9
+            comps.minute = 0
+            comps.second = 0
+
+            let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+            let identifierDate = isoDayString(reminderDate, calendar: calendar)
+            let request = UNNotificationRequest(
+                identifier: "card-closing-\(account.id.uuidString)-\(identifierDate)",
+                content: content,
+                trigger: trigger
+            )
+            center.add(request)
+        }
+    }
+
+    private func scheduleDueReminder(for account: Account, calendar: Calendar, now: Date, limit: Date) {
+        guard let dueDay = account.ccPaymentDueDay else { return }
+
+        for monthStart in upcomingMonthStarts(from: now, calendar: calendar) {
+            guard let dueDate = clippedDate(for: dueDay, in: monthStart, calendar: calendar) else { continue }
+            let reminderDate = calendar.startOfDay(for: dueDate)
+            guard reminderDate >= now, reminderDate <= limit else { continue }
+
+            let content = UNMutableNotificationContent()
+            content.title = t("notif.cardDueTodayTitle")
+            content.body = String(format: t("notif.cardDueTodayBody"), account.name)
+            content.sound = .default
+            content.interruptionLevel = .timeSensitive
+
+            var comps = calendar.dateComponents([.year, .month, .day], from: reminderDate)
+            comps.hour = 9
+            comps.minute = 0
+            comps.second = 0
+
+            let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+            let identifierDate = isoDayString(reminderDate, calendar: calendar)
+            let request = UNNotificationRequest(
+                identifier: "card-due-\(account.id.uuidString)-\(identifierDate)",
+                content: content,
+                trigger: trigger
+            )
+            center.add(request)
+        }
+    }
+
+    private func upcomingMonthStarts(from date: Date, calendar: Calendar) -> [Date] {
+        guard let currentMonthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: date)) else {
+            return []
+        }
+
+        return (0...2).compactMap { offset in
+            calendar.date(byAdding: .month, value: offset, to: currentMonthStart)
+        }
+    }
+
+    private func clippedDate(for day: Int, in monthStart: Date, calendar: Calendar) -> Date? {
+        guard let maxDay = calendar.range(of: .day, in: .month, for: monthStart)?.count else { return nil }
+        let components = calendar.dateComponents([.year, .month], from: monthStart)
+        return calendar.date(from: DateComponents(
+            year: components.year,
+            month: components.month,
+            day: min(day, maxDay)
+        ))
+    }
+
+    private func isoDayString(_ date: Date, calendar: Calendar) -> String {
+        let comps = calendar.dateComponents([.year, .month, .day], from: date)
+        let year = comps.year ?? 0
+        let month = comps.month ?? 0
+        let day = comps.day ?? 0
+        return String(format: "%04d-%02d-%02d", year, month, day)
+    }
+
     private func matchesGoal(_ tx: Transaction, goal: Goal) -> Bool {
         guard tx.type == .expense else { return false }
-        guard let goalCategory = goal.category else { return true } // meta global
-        let root = tx.category?.parent ?? tx.category
-        return root?.id == goalCategory.id
+        return goal.matches(tx)
     }
 }

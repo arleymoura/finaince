@@ -27,6 +27,7 @@ struct TransactionListView: View {
     @State private var selectedCategoryId: UUID? = nil
     @State private var selectedSubcategoryId: UUID? = nil
     @State private var selectedPaymentFilter: TransactionPaymentFilter = .all
+    @State private var selectedKindFilter: TransactionKindFilter = .all
     @State private var searchText         = ""
     @State private var isSearchVisible    = false
     @State private var showCategoryFilter = false
@@ -155,7 +156,8 @@ struct TransactionListView: View {
     private var hasTransactionFilters: Bool {
         selectedCategoryId != nil ||
         selectedSubcategoryId != nil ||
-        selectedPaymentFilter != .all
+        selectedPaymentFilter != .all ||
+        selectedKindFilter != .all
     }
 
     // Thin aliases — actual data lives in @State cache updated by refreshListCache()
@@ -183,6 +185,17 @@ struct TransactionListView: View {
             case .paid:    guard  tx.isPaid else { return false }
             case .pending: guard !tx.isPaid else { return false }
             case .all: break
+            }
+
+            switch selectedKindFilter {
+            case .all:
+                break
+            case .expense:
+                guard tx.kind == .regular, tx.type == .expense else { return false }
+            case .cashWithdrawal:
+                guard tx.kind == .cashWithdrawal else { return false }
+            case .cardBillPayment:
+                guard tx.kind == .cardBillPayment else { return false }
             }
 
             if !search.isEmpty {
@@ -365,6 +378,7 @@ struct TransactionListView: View {
             .onChange(of: selectedCategoryId)     { _, _ in refreshListCache() }
             .onChange(of: selectedSubcategoryId)  { _, _ in refreshListCache() }
             .onChange(of: selectedPaymentFilter)  { _, _ in refreshListCache() }
+            .onChange(of: selectedKindFilter)     { _, _ in refreshListCache() }
             .onChange(of: viewMode) { _, newMode in
                 if newMode == .list { chartInsight = ""; lastInsightKey = "" }
             }
@@ -954,136 +968,88 @@ struct TransactionListView: View {
         if let acc = selectedAccount { parts.append(acc.name) }
         if selectedCategoryId != nil { parts.append(categoryFilterTitle) }
         if selectedPaymentFilter != .all { parts.append(selectedPaymentFilter.label) }
+        if selectedKindFilter != .all { parts.append(selectedKindFilter.label) }
         if !searchText.isEmpty { parts.append("\"\(searchText)\"") }
         return parts.joined(separator: " · ")
     }
 
     private var inlineFilterBar: some View {
         VStack(spacing: 0) {
-            if isRegularLayout {
-                HStack(alignment: .center, spacing: 10) {
-                    accountDropdown
-                        .frame(maxWidth: .infinity)
-                    
-                    categoryDropdown
-                        .frame(maxWidth: .infinity)
-                    
-                    statusDropdown
-                        .frame(maxWidth: .infinity)
-                    
-                    searchField
-                        .frame(maxWidth: .infinity)
-                    
-                    if hasActiveFilters {
-                        Button {
-                            withAnimation(.spring(duration: 0.25)) { clearFilters() }
-                        } label: {
-                            Text(t("common.clear"))
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(Color.accentColor)
-                                .padding(.horizontal, 6)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 15)
-                .padding(.top, isRegularLayout ? 0 : 10)
-            } else {
-                HStack(alignment: .center,spacing: 8) {
-                    accountDropdown
-                        .frame(maxWidth: .infinity)
-                    
-                    categoryDropdown
-                        .frame(maxWidth: .infinity)
-                    
-                    statusDropdown
-                        .frame(maxWidth: .infinity)
-                    
+            accountFilterBar
+                .padding(.top, isRegularLayout ? 10 : 8)
+
+            HStack(alignment: .center, spacing: 8) {
+                categoryDropdown
+                    .frame(maxWidth: .infinity)
+
+                statusDropdown
+                    .frame(maxWidth: .infinity)
+
+                typeDropdown
+                    .frame(maxWidth: .infinity)
+
+                searchToggleButton
+            }
+            .padding(.horizontal, isRegularLayout ? 20 : 16)
+            .padding(.top, 10)
+            .padding(.bottom, hasActiveFilters || isSearchVisible ? 6 : 10)
+
+            if hasActiveFilters {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 6, height: 6)
+                    Text(activeFiltersSummary)
+                        .font(.caption)
+                        .foregroundStyle(FinAInceColor.secondaryText)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 4)
                     Button {
-                        withAnimation(.spring(duration: 0.25)) {
-                            isSearchVisible.toggle()
-                            if !isSearchVisible {
-                                searchText = ""
-                                isSearchFocused = false
-                            }
-                        }
+                        withAnimation(.spring(duration: 0.25)) { clearFilters() }
                     } label: {
-                        Image(systemName: isSearchVisible || !searchText.isEmpty
-                              ? "magnifyingglass.circle.fill"
-                              : "magnifyingglass")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(isSearchVisible || !searchText.isEmpty
-                                         ? FinAInceColor.accentText : FinAInceColor.secondaryText)
-                        .frame(width: 36, height: 36)
-                        .background(FinAInceColor.secondarySurface)
-                        .clipShape(Circle())
+                        Text(t("common.clear"))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-                .padding(.bottom, hasActiveFilters || isSearchVisible ? 6 : 10)
-                
-                if hasActiveFilters {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(Color.accentColor)
-                            .frame(width: 6, height: 6)
-                        Text(activeFiltersSummary)
-                            .font(.caption)
-                            .foregroundStyle(FinAInceColor.secondaryText)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Spacer(minLength: 4)
-                        Button {
-                            withAnimation(.spring(duration: 0.25)) { clearFilters() }
-                        } label: {
-                            Text(t("common.clear"))
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(Color.accentColor)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, isSearchVisible ? 4 : 8)
+                .padding(.horizontal, isRegularLayout ? 20 : 16)
+                .padding(.bottom, isSearchVisible ? 4 : 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            if isSearchVisible {
+                searchField
+                    .padding(.horizontal, isRegularLayout ? 20 : 16)
+                    .padding(.bottom, 8)
                     .transition(.move(edge: .top).combined(with: .opacity))
-                }
-                
-                if isSearchVisible {
-                    searchField
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 8)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
             }
         }
         .animation(.spring(duration: 0.25), value: hasActiveFilters)
     }
 
-    private var accountDropdown: some View {
-        Menu {
-            Button {
-                selectedAccountId = nil
-            } label: {
-                Label(t("account.allAccounts"), systemImage: "tray.2.fill")
-            }
-            Divider()
-            ForEach(sortedAccounts) { account in
-                Button {
-                    selectedAccountId = account.id
-                } label: {
-                    Label(account.name, systemImage: account.icon)
+    private var accountFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                accountPill(nil, label: t("account.allAccounts"), color: nil)
+                ForEach(sortedAccounts) { account in
+                    accountPill(account.id, label: account.name, color: account.color)
                 }
             }
-        } label: {
-            FilterPillView(
-                label: selectedAccount?.name ?? t("transaction.account"),
-                icon: selectedAccount?.icon ?? "tray.2.fill",
-                color: selectedAccount?.color ?? "#8E8E93",
-                isSelected: selectedAccountId != nil
-            )
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
         }
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(isRegularLayout ? FinAInceColor.elevatedSurface : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(isRegularLayout ? FinAInceColor.borderSubtle : Color.clear, lineWidth: 1)
+        )
+        .shadow(color: isRegularLayout ? Color.black.opacity(0.05) : .clear, radius: 14, y: 8)
+        .padding(.horizontal, isRegularLayout ? 20 : 0)
     }
 
     private var categoryDropdown: some View {
@@ -1117,6 +1083,91 @@ struct TransactionListView: View {
                 isSelected: selectedPaymentFilter != .all
             )
         }
+    }
+
+    private var typeDropdown: some View {
+        Menu {
+            ForEach(TransactionKindFilter.allCases, id: \.self) { filter in
+                Button {
+                    selectedKindFilter = filter
+                } label: {
+                    Label(filter.label, systemImage: filter.icon)
+                }
+            }
+        } label: {
+            FilterPillView(
+                label: selectedKindFilter.label,
+                icon: selectedKindFilter.icon,
+                color: selectedKindFilter.color,
+                isSelected: selectedKindFilter != .all
+            )
+        }
+    }
+
+    private var searchToggleButton: some View {
+        Button {
+            withAnimation(.spring(duration: 0.25)) {
+                isSearchVisible.toggle()
+                if !isSearchVisible {
+                    searchText = ""
+                    isSearchFocused = false
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: isSearchVisible || !searchText.isEmpty ? "magnifyingglass.circle.fill" : "magnifyingglass")
+                    .font(.system(size: 11, weight: .semibold))
+                if isRegularLayout {
+                    Text(t("transaction.search"))
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                }
+            }
+            .foregroundStyle(isSearchVisible || !searchText.isEmpty ? FinAInceColor.accentText : FinAInceColor.secondaryText)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(FinAInceColor.secondarySurface)
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        (isSearchVisible || !searchText.isEmpty) ? Color.accentColor.opacity(0.35) : FinAInceColor.borderSubtle,
+                        lineWidth: 1
+                    )
+            )
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func accountPill(_ id: UUID?, label: String, color: String?) -> some View {
+        let isSelected = selectedAccountId == id
+        return Button {
+            selectedAccountId = (id == nil) ? nil : (isSelected ? nil : id)
+        } label: {
+            HStack(spacing: 5) {
+                if let color {
+                    Circle()
+                        .fill(Color(hex: color))
+                        .frame(width: 7, height: 7)
+                }
+                Text(label)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 7)
+            .background(isSelected ? FinAInceColor.primaryActionBackground : FinAInceColor.secondarySurface)
+            .foregroundStyle(isSelected ? FinAInceColor.primaryActionForeground : FinAInceColor.primaryText)
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        isSelected ? Color.clear : FinAInceColor.borderStrong,
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
     }
 
     @FocusState private var isSearchFocused: Bool
@@ -1162,6 +1213,7 @@ struct TransactionListView: View {
         selectedCategoryId = nil
         selectedSubcategoryId = nil
         selectedPaymentFilter = .all
+        selectedKindFilter = .all
         withAnimation(.spring(duration: 0.25)) {
             isSearchVisible = false
         }
@@ -2082,6 +2134,52 @@ private enum TransactionPaymentFilter: CaseIterable {
     }
 }
 
+private enum TransactionKindFilter: CaseIterable {
+    case all
+    case expense
+    case cashWithdrawal
+    case cardBillPayment
+
+    var label: String {
+        switch self {
+        case .all:
+            return t("newTx.type")
+        case .expense:
+            return t("transaction.type.expense")
+        case .cashWithdrawal:
+            return t("import.cashWithdrawal")
+        case .cardBillPayment:
+            return t("import.billPayment")
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .all:
+            return "line.3.horizontal.decrease.circle"
+        case .expense:
+            return "minus.circle.fill"
+        case .cashWithdrawal:
+            return "banknote.fill"
+        case .cardBillPayment:
+            return "creditcard.and.123"
+        }
+    }
+
+    var color: String {
+        switch self {
+        case .all:
+            return "#8E8E93"
+        case .expense:
+            return "#FF3B30"
+        case .cashWithdrawal:
+            return "#FF9500"
+        case .cardBillPayment:
+            return "#007AFF"
+        }
+    }
+}
+
 // MARK: - View Mode
 
 private enum TransactionViewMode: CaseIterable {
@@ -2412,11 +2510,14 @@ struct TransactionRowView: View {
     var body: some View {
         // Subcategoria tem prioridade sobre categoria para ícone e cor
         let iconSource = transaction.subcategory ?? transaction.category
-        let iconColor = Color(hex: iconSource?.color ?? "#8E8E93")
+        let rowIconName = transaction.kind == .cashWithdrawal ? "banknote" : (iconSource?.icon ?? "dollarsign.circle")
+        let iconColor = transaction.kind == .cashWithdrawal
+            ? .orange
+            : Color(hex: iconSource?.color ?? "#8E8E93")
 
         HStack(spacing: 12) {
             // Ícone da subcategoria (se houver) ou categoria
-            Image(systemName: iconSource?.icon ?? "dollarsign.circle")
+            Image(systemName: rowIconName)
                 .font(.subheadline)
                 .foregroundStyle(iconColor)
                 .frame(width: 36, height: 36)
@@ -2438,6 +2539,50 @@ struct TransactionRowView: View {
                 .lineLimit(1)
 
                 HStack(spacing: 6) {
+                    if transaction.kind == .cardBillPayment {
+                        HStack(spacing: 3) {
+                            Image(systemName: "creditcard")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text(t("import.billPayment"))
+                                .font(.caption2.weight(.semibold))
+                        }
+                        .foregroundStyle(.blue)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.blue.opacity(0.12))
+                        .clipShape(Capsule())
+                    }
+
+                    if transaction.kind == .cashWithdrawal {
+                        HStack(spacing: 3) {
+                            Image(systemName: "banknote")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text(t("import.cashWithdrawal"))
+                                .font(.caption2.weight(.semibold))
+                        }
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.12))
+                        .clipShape(Capsule())
+                    }
+
+                    if transaction.kind == .cashWithdrawal,
+                       let associationCount = transaction.outgoingCashAllocations?.count,
+                       associationCount > 0 {
+                        HStack(spacing: 3) {
+                            Image(systemName: "link")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("\(associationCount)")
+                                .font(.caption2.weight(.semibold))
+                        }
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.12))
+                        .clipShape(Capsule())
+                    }
+
                     // Conta
                     if showAccount, let account = transaction.account {
                         HStack(spacing: 3) {

@@ -53,10 +53,55 @@ struct InsightEngine {
         candidates.appendIfPresent(installmentsInsight(context))
         candidates.appendIfPresent(streakSavingInsight(context))
         candidates.appendIfPresent(behaviorPatternInsight(context))
+        candidates.append(contentsOf: creditCardCycleInsights(context))
 
         let selected = selectInsights(from: candidates)
         rememberShownInsights(selected)
         return selected
+    }
+
+    static func computeDailyInsight(
+        transactions: [Transaction],
+        accounts: [Account] = [],
+        goals: [Goal] = [],
+        month: Int,
+        year: Int,
+        currencyCode: String,
+        selectedAccountId: UUID? = nil
+    ) -> DailyInsight? {
+        let context = InsightContext(
+            transactions: transactions,
+            accounts: accounts,
+            goals: goals,
+            month: month,
+            year: year,
+            currencyCode: currencyCode,
+            selectedAccountId: selectedAccountId
+        )
+
+        guard !context.scopedTransactions.isEmpty || !goals.isEmpty else { return nil }
+
+        var candidates: [Insight] = []
+        candidates.appendIfPresent(goalRiskInsight(context))
+        candidates.appendIfPresent(endOfMonthProjectionInsight(context))
+        candidates.appendIfPresent(spendingPaceInsight(context))
+        candidates.appendIfPresent(subscriptionUnusedInsight(context))
+        candidates.appendIfPresent(abnormalTransactionInsight(context))
+        candidates.appendIfPresent(categoryTrendUpInsight(context))
+        candidates.appendIfPresent(categoryOverBaselineInsight(context))
+        candidates.appendIfPresent(monthComparisonInsight(context))
+        candidates.appendIfPresent(recurringPriceChangeInsight(context))
+        candidates.appendIfPresent(topCategoryInsight(context))
+        candidates.appendIfPresent(spendingConcentrationInsight(context))
+        candidates.appendIfPresent(avgTicketIncreaseInsight(context))
+        candidates.appendIfPresent(billDueSoonInsight(context))
+        candidates.appendIfPresent(installmentsInsight(context))
+        candidates.appendIfPresent(streakSavingInsight(context))
+        candidates.appendIfPresent(behaviorPatternInsight(context))
+        candidates.append(contentsOf: creditCardCycleInsights(context))
+
+        guard let selected = selectDailyInsight(from: candidates) else { return nil }
+        return makeDailyInsight(from: selected, context: context)
     }
 
     // MARK: - Selection
@@ -97,6 +142,15 @@ struct InsightEngine {
         }
 
         return Array(selected.prefix(maxInsightsToShow))
+    }
+
+    private static func selectDailyInsight(from candidates: [Insight]) -> Insight? {
+        candidates.max { lhs, rhs in
+            if lhs.score == rhs.score {
+                return lhs.title > rhs.title
+            }
+            return lhs.score < rhs.score
+        }
     }
 
     private static func rememberShownInsights(_ insights: [Insight]) {
@@ -884,6 +938,229 @@ struct InsightEngine {
         )
     }
 
+    private static func creditCardCycleInsights(_ context: InsightContext) -> [Insight] {
+        context.creditCardCycleSnapshots.flatMap { snapshot in
+            [
+                bestPurchaseTimingInsight(snapshot, context: context),
+                closingRiskInsight(snapshot, context: context),
+                attentionWindowInsight(snapshot, context: context),
+                creditCardSpendingTrendInsight(snapshot, context: context),
+                creditLimitRiskInsight(snapshot, context: context),
+                creditCardForecastOverflowInsight(snapshot, context: context)
+            ]
+            .compactMap { $0 }
+        }
+    }
+
+    private static func bestPurchaseTimingInsight(
+        _ snapshot: CreditCardCycleSnapshot,
+        context: InsightContext
+    ) -> Insight? {
+        guard snapshot.daysUntilClosing >= 25 else { return nil }
+
+        return makeInsight(
+            kind: .bestPurchaseTiming,
+            title: t("insight.card.bestPurchaseTiming.title", snapshot.account.name),
+            body: t("insight.card.bestPurchaseTiming.body"),
+            icon: "sun.max.fill",
+            color: .green,
+            sentiment: .opportunity,
+            topicKey: "card-best-time:\(snapshot.account.id.uuidString)",
+            amount: snapshot.currentCycleSpend,
+            percentage: nil,
+            category: nil,
+            merchant: snapshot.account.name,
+            impactAmount: max(snapshot.currentCycleSpend, 1),
+            deviationPercent: nil,
+            urgency: 12,
+            basePriority: 32,
+            currencyCode: context.currencyCode,
+            chatPrompt: t("insight.card.bestPurchaseTiming.prompt", snapshot.account.name)
+        )
+    }
+
+    private static func closingRiskInsight(
+        _ snapshot: CreditCardCycleSnapshot,
+        context: InsightContext
+    ) -> Insight? {
+        guard snapshot.daysUntilClosing <= 3 else { return nil }
+
+        return makeInsight(
+            kind: .closingRisk,
+            title: t("insight.card.closingRisk.title", snapshot.account.name),
+            body: t("insight.card.closingRisk.body", snapshot.daysUntilClosing),
+            icon: "exclamationmark.circle.fill",
+            color: .red,
+            sentiment: .alert,
+            topicKey: "card-closing-risk:\(snapshot.account.id.uuidString)",
+            amount: snapshot.currentCycleSpend,
+            percentage: nil,
+            category: nil,
+            merchant: snapshot.account.name,
+            impactAmount: max(snapshot.currentCycleSpend, 1),
+            deviationPercent: nil,
+            urgency: 90,
+            basePriority: 140,
+            currencyCode: context.currencyCode,
+            chatPrompt: t(
+                "insight.card.closingRisk.prompt",
+                snapshot.account.name,
+                snapshot.currentCycleSpend.asCurrency(context.currencyCode)
+            )
+        )
+    }
+
+    private static func attentionWindowInsight(
+        _ snapshot: CreditCardCycleSnapshot,
+        context: InsightContext
+    ) -> Insight? {
+        guard (4...10).contains(snapshot.daysUntilClosing) else { return nil }
+
+        return makeInsight(
+            kind: .attentionWindow,
+            title: t("insight.card.attentionWindow.title", snapshot.account.name),
+            body: t("insight.card.attentionWindow.body", snapshot.daysUntilClosing),
+            icon: "calendar.badge.exclamationmark",
+            color: .yellow,
+            sentiment: .alert,
+            topicKey: "card-attention:\(snapshot.account.id.uuidString)",
+            amount: snapshot.currentCycleSpend,
+            percentage: nil,
+            category: nil,
+            merchant: snapshot.account.name,
+            impactAmount: max(snapshot.currentCycleSpend, 1),
+            deviationPercent: nil,
+            urgency: 45,
+            basePriority: 72,
+            currencyCode: context.currencyCode,
+            chatPrompt: t("insight.card.attentionWindow.prompt", snapshot.account.name, snapshot.daysUntilClosing)
+        )
+    }
+
+    private static func creditCardSpendingTrendInsight(
+        _ snapshot: CreditCardCycleSnapshot,
+        context: InsightContext
+    ) -> Insight? {
+        guard snapshot.previousCycleSpendAtSamePoint > 0 else { return nil }
+
+        let delta = snapshot.currentCycleSpend - snapshot.previousCycleSpendAtSamePoint
+        let percent = (delta / snapshot.previousCycleSpendAtSamePoint) * 100
+        guard abs(percent) >= 10 else { return nil }
+
+        let isHigher = delta > 0
+        return makeInsight(
+            kind: .creditCardSpendingTrend,
+            title: isHigher
+                ? t("insight.card.spendingTrend.high.title", snapshot.account.name)
+                : t("insight.card.spendingTrend.low.title", snapshot.account.name),
+            body: isHigher
+                ? t("insight.card.spendingTrend.high.body", Int(abs(percent).rounded()))
+                : t("insight.card.spendingTrend.low.body", Int(abs(percent).rounded())),
+            icon: isHigher ? "arrow.up.right.circle.fill" : "arrow.down.right.circle.fill",
+            color: isHigher ? .orange : .blue,
+            sentiment: isHigher ? .alert : .opportunity,
+            topicKey: "card-trend:\(snapshot.account.id.uuidString)",
+            amount: snapshot.currentCycleSpend,
+            percentage: abs(percent),
+            category: nil,
+            merchant: snapshot.account.name,
+            impactAmount: abs(delta),
+            deviationPercent: percent,
+            urgency: 38,
+            basePriority: 88,
+            currencyCode: context.currencyCode,
+            chatPrompt: t(
+                "insight.card.spendingTrend.prompt",
+                snapshot.account.name,
+                Int(abs(percent).rounded()),
+                snapshot.currentCycleSpend.asCurrency(context.currencyCode),
+                snapshot.previousCycleSpendAtSamePoint.asCurrency(context.currencyCode)
+            )
+        )
+    }
+
+    private static func creditLimitRiskInsight(
+        _ snapshot: CreditCardCycleSnapshot,
+        context: InsightContext
+    ) -> Insight? {
+        guard let utilization = snapshot.utilizationRatio, utilization >= 0.7 else { return nil }
+
+        let escalated = utilization >= 0.9
+        return makeInsight(
+            kind: .creditLimitRisk,
+            title: escalated
+                ? t("insight.card.limitRisk.high.title", snapshot.account.name)
+                : t("insight.card.limitRisk.title", snapshot.account.name),
+            body: t(
+                escalated ? "insight.card.limitRisk.high.body" : "insight.card.limitRisk.body",
+                Int((utilization * 100).rounded()),
+                snapshot.daysUntilClosing
+            ),
+            icon: escalated ? "creditcard.trianglebadge.exclamationmark" : "creditcard.and.123",
+            color: .red,
+            sentiment: .alert,
+            topicKey: "card-limit:\(snapshot.account.id.uuidString)",
+            amount: snapshot.currentCycleSpend,
+            percentage: utilization * 100,
+            category: nil,
+            merchant: snapshot.account.name,
+            impactAmount: snapshot.currentCycleSpend,
+            deviationPercent: utilization * 100,
+            urgency: escalated ? 98 : 82,
+            basePriority: escalated ? 165 : 138,
+            currencyCode: context.currencyCode,
+            chatPrompt: t(
+                "insight.card.limitRisk.prompt",
+                snapshot.account.name,
+                Int((utilization * 100).rounded()),
+                snapshot.currentCycleSpend.asCurrency(context.currencyCode),
+                snapshot.creditLimit?.asCurrency(context.currencyCode) ?? "—"
+            )
+        )
+    }
+
+    private static func creditCardForecastOverflowInsight(
+        _ snapshot: CreditCardCycleSnapshot,
+        context: InsightContext
+    ) -> Insight? {
+        guard snapshot.projectedCycleSpend > snapshot.currentCycleSpend else { return nil }
+
+        let delta = snapshot.projectedCycleSpend - snapshot.currentCycleSpend
+        let percent = snapshot.currentCycleSpend > 0
+            ? (delta / snapshot.currentCycleSpend) * 100
+            : 0
+        guard delta > 0, percent >= 10 else { return nil }
+
+        return makeInsight(
+            kind: .creditCardForecastOverflow,
+            title: t("insight.card.forecastOverflow.title", snapshot.account.name),
+            body: t(
+                "insight.card.forecastOverflow.body",
+                snapshot.projectedCycleSpend.asCurrency(context.currencyCode),
+                Int(percent.rounded())
+            ),
+            icon: "chart.line.uptrend.xyaxis",
+            color: .orange,
+            sentiment: .alert,
+            topicKey: "card-forecast:\(snapshot.account.id.uuidString)",
+            amount: snapshot.projectedCycleSpend,
+            percentage: percent,
+            category: nil,
+            merchant: snapshot.account.name,
+            impactAmount: delta,
+            deviationPercent: percent,
+            urgency: 68,
+            basePriority: 128,
+            currencyCode: context.currencyCode,
+            chatPrompt: t(
+                "insight.card.forecastOverflow.prompt",
+                snapshot.account.name,
+                snapshot.projectedCycleSpend.asCurrency(context.currencyCode),
+                Int(percent.rounded())
+            )
+        )
+    }
+
     // MARK: - Scoring
 
     private static func makeInsight(
@@ -937,6 +1214,93 @@ struct InsightEngine {
         return kindPenalty + topicPenalty
     }
 
+    private static func makeDailyInsight(from insight: Insight, context: InsightContext) -> DailyInsight {
+        DailyInsight(
+            sourceInsight: insight,
+            title: insight.title,
+            explanation: insight.body,
+            action: dailyAction(for: insight),
+            chatPrompt: buildDailyInsightPrompt(for: insight, context: context)
+        )
+    }
+
+    private static func dailyAction(for insight: Insight) -> String {
+        switch insight.kind {
+        case .goalRisk:
+            return t("dashboard.dailyInsight.action.goalRisk", insight.metadata?.category ?? t("insight.fallback.uncategorized"))
+        case .spendingPace, .endOfMonthProjection, .monthComparison, .spendingConcentration, .avgTicketIncrease:
+            return t("dashboard.dailyInsight.action.slowMonth")
+        case .subscriptionUnused:
+            return t("dashboard.dailyInsight.action.reviewSubscriptions")
+        case .abnormalTransaction, .priceChange:
+            return t("dashboard.dailyInsight.action.inspectExpense", insight.metadata?.merchant ?? insight.metadata?.category ?? t("insight.fallback.uncategorized"))
+        case .categoryTrendUp, .categoryOverBaseline, .topCategory:
+            return t("dashboard.dailyInsight.action.watchCategory", insight.metadata?.category ?? t("insight.fallback.uncategorized"))
+        case .billDueSoon:
+            return t("dashboard.dailyInsight.action.prepareBill")
+        case .installments:
+            return t("dashboard.dailyInsight.action.avoidInstallments")
+        case .streakSaving:
+            return t("dashboard.dailyInsight.action.keepSaving")
+        case .behaviorPattern:
+            return t("dashboard.dailyInsight.action.repeatGoodHabit")
+        case .bestPurchaseTiming:
+            return t("dashboard.dailyInsight.action.bestPurchaseTiming")
+        case .closingRisk, .attentionWindow:
+            return t("dashboard.dailyInsight.action.closingRisk")
+        case .creditCardSpendingTrend:
+            return t("dashboard.dailyInsight.action.cardTrend")
+        case .creditLimitRisk:
+            return t("dashboard.dailyInsight.action.limitRisk")
+        case .creditCardForecastOverflow:
+            return t("dashboard.dailyInsight.action.cardForecast")
+        case .cashFlowProjection:
+            return t("dashboard.dailyInsight.action.protectCashFlow")
+        }
+    }
+
+    private static func buildDailyInsightPrompt(for insight: Insight, context: InsightContext) -> String {
+        let topCategory = context.topCategorySummary
+        let goalSummary = context.mostCriticalGoalSummary
+        let cardSummary = context.primaryCreditCardSummary
+        let previousMonthComparison = context.previousMonthPaid > 0
+            ? t(
+                "dashboard.dailyInsight.prompt.previousMonthComparison",
+                context.currentMonthPaid.asCurrency(context.currencyCode),
+                context.previousMonthPaid.asCurrency(context.currencyCode)
+            )
+            : t("dashboard.dailyInsight.prompt.previousMonthComparisonEmpty")
+
+        return """
+        \(t("dashboard.dailyInsight.prompt.instructions"))
+
+        Current date:
+        \(context.today.formatted(date: .complete, time: .omitted))
+
+        Current highlighted signal:
+        - Title: \(insight.title)
+        - Explanation: \(insight.body)
+        - Recommended action: \(dailyAction(for: insight))
+
+        This month summary:
+        - Paid so far: \(context.currentMonthPaid.asCurrency(context.currencyCode))
+        - Pending this month: \(context.remainingCurrentMonthPending.asCurrency(context.currencyCode))
+        - Projected close: \(context.projectedEndOfMonthTotal.asCurrency(context.currencyCode))
+
+        Category spending:
+        - \(topCategory)
+
+        Goals and limits:
+        - \(goalSummary)
+
+        Credit cards:
+        - \(cardSummary)
+
+        Previous month comparison:
+        - \(previousMonthComparison)
+        """
+    }
+
     // MARK: - Helpers
 
     private static func categoryTotal(_ categoryKey: String, in transactions: [Transaction]) -> Double {
@@ -968,14 +1332,10 @@ struct InsightEngine {
         return nil
     }
 
-    private static func spentAmount(for goal: Goal, in transactions: [Transaction]) -> Double {
-        if let category = goal.category {
+    fileprivate static func spentAmount(for goal: Goal, in transactions: [Transaction]) -> Double {
+        if goal.category != nil {
             return transactions
-                .filter {
-                    let root = $0.category?.parent ?? $0.category
-                    return root?.persistentModelID == category.persistentModelID
-                        || $0.category?.persistentModelID == category.persistentModelID
-                }
+                .filter { goal.matches($0) }
                 .reduce(0) { $0 + $1.amount }
         }
 
@@ -1044,9 +1404,23 @@ private struct InsightContext {
         currentMonthExpenses.filter { !$0.isPaid }
     }
 
+    var currentMonthLoggedThroughToday: [Transaction] {
+        currentMonthExpenses.filter { $0.date <= now }
+    }
+
+    var currentMonthCommittedToDate: Double {
+        currentMonthLoggedThroughToday.reduce(0) { $0 + $1.amount }
+    }
+
     var remainingCurrentMonthPending: Double {
         currentMonthPending
             .filter { $0.date >= today }
+            .reduce(0) { $0 + $1.amount }
+    }
+
+    var futureCurrentMonthPending: Double {
+        currentMonthPending
+            .filter { $0.date > now }
             .reduce(0) { $0 + $1.amount }
     }
 
@@ -1080,9 +1454,22 @@ private struct InsightContext {
     }
 
     var projectedEndOfMonthTotal: Double {
-        guard isCurrentMonth, elapsedMonthRatio > 0 else { return currentMonthPaid + remainingCurrentMonthPending }
-        let rawProjection = currentMonthPaid / elapsedMonthRatio
-        return max(rawProjection, currentMonthPaid + remainingCurrentMonthPending)
+        let committed = currentMonthCommittedToDate
+        let scheduledFuture = futureCurrentMonthPending
+
+        guard isCurrentMonth, elapsedMonthRatio > 0 else {
+            return max(currentMonthPaid + remainingCurrentMonthPending, committed + scheduledFuture)
+        }
+
+        // Stabilize early-month projections so one or two large expenses do not explode the forecast.
+        let stabilizedRatio = max(elapsedMonthRatio, 0.25)
+        let paidRunRateProjection = currentMonthPaid / stabilizedRatio
+        let committedRunRateProjection = committed / stabilizedRatio
+        let blendedRunRateProjection = (paidRunRateProjection * 0.35) + (committedRunRateProjection * 0.65)
+        let conservativeProjection = max(committed, blendedRunRateProjection)
+        let floorProjection = committed + scheduledFuture
+
+        return max(conservativeProjection, floorProjection)
     }
 
     var elapsedMonthRatio: Double {
@@ -1137,6 +1524,167 @@ private struct InsightContext {
         comps.day = 1
         return calendar.date(from: comps) ?? now
     }
+
+    var visibleCreditCardAccounts: [Account] {
+        let cards = accounts.filter { $0.type == .creditCard }
+        if let selectedAccountId {
+            return cards.filter { $0.id == selectedAccountId }
+        }
+        return cards
+    }
+
+    var creditCardCycleSnapshots: [CreditCardCycleSnapshot] {
+        visibleCreditCardAccounts.compactMap { creditCardCycleSnapshot(for: $0) }
+    }
+
+    var topCategorySummary: String {
+        let totals = Dictionary(grouping: currentMonthExpenses.compactMap { transaction -> (String, Double)? in
+            guard let identity = InsightEngine.categoryIdentity(for: transaction) else { return nil }
+            return (identity.name, transaction.amount)
+        }, by: \.0)
+            .mapValues { entries in
+                entries.reduce(0) { $0 + $1.1 }
+            }
+            .sorted { lhs, rhs in lhs.value > rhs.value }
+
+        guard let top = totals.first else {
+            return t("dashboard.dailyInsight.prompt.noCategoryData")
+        }
+
+        return t(
+            "dashboard.dailyInsight.prompt.topCategory",
+            top.key,
+            top.value.asCurrency(currencyCode)
+        )
+    }
+
+    var mostCriticalGoalSummary: String {
+        let riskyGoals = goals.compactMap { goal -> (Goal, Double)? in
+            let spent = InsightEngine.spentAmount(for: goal, in: currentMonthExpenses)
+            guard goal.targetAmount > 0 else { return nil }
+            return (goal, spent / goal.targetAmount)
+        }
+        .sorted { lhs, rhs in lhs.1 > rhs.1 }
+
+        guard let (goal, ratio) = riskyGoals.first else {
+            return t("dashboard.dailyInsight.prompt.noGoalData")
+        }
+
+        return t(
+            "dashboard.dailyInsight.prompt.goalSummary",
+            goal.title,
+            Int((ratio * 100).rounded())
+        )
+    }
+
+    var primaryCreditCardSummary: String {
+        let sortedCards = creditCardCycleSnapshots.sorted { lhs, rhs in
+            let left = lhs.utilizationRatio ?? 0
+            let right = rhs.utilizationRatio ?? 0
+            if left == right {
+                return lhs.daysUntilClosing < rhs.daysUntilClosing
+            }
+            return left > right
+        }
+
+        guard let card = sortedCards.first else {
+            return t("dashboard.dailyInsight.prompt.noCreditCardData")
+        }
+
+        if let utilizationRatio = card.utilizationRatio, let creditLimit = card.creditLimit {
+            return t(
+                "dashboard.dailyInsight.prompt.cardSummaryWithLimit",
+                card.account.name,
+                Int((utilizationRatio * 100).rounded()),
+                card.daysUntilClosing,
+                creditLimit.asCurrency(currencyCode)
+            )
+        }
+
+        return t(
+            "dashboard.dailyInsight.prompt.cardSummary",
+            card.account.name,
+            card.currentCycleSpend.asCurrency(currencyCode),
+            card.daysUntilClosing
+        )
+    }
+
+    private func creditCardCycleSnapshot(for account: Account) -> CreditCardCycleSnapshot? {
+        guard let currentCycle = account.billingCycleRange(containing: now, calendar: calendar) else { return nil }
+
+        let currentTransactions = scopedTransactions
+            .filter {
+                $0.account?.id == account.id &&
+                $0.type == .expense &&
+                $0.date >= currentCycle.start &&
+                $0.date < currentCycle.nextStart
+            }
+
+        let currentCycleSpend = currentTransactions.reduce(0) { $0 + $1.amount }
+        let startOfToday = calendar.startOfDay(for: now)
+        let startOfClosing = calendar.startOfDay(for: currentCycle.end)
+        let daysUntilClosing = max(0, calendar.dateComponents([.day], from: startOfToday, to: startOfClosing).day ?? 0)
+        let totalCycleDays = max(1, calendar.dateComponents([.day], from: currentCycle.start, to: currentCycle.nextStart).day ?? 30)
+        let elapsedCycleDays = min(
+            totalCycleDays,
+            max(1, calendar.dateComponents([.day], from: currentCycle.start, to: startOfToday).day ?? 1)
+        )
+        let elapsedRatio = min(max(Double(elapsedCycleDays) / Double(totalCycleDays), 0.01), 1)
+
+        let previousReference = calendar.date(byAdding: .day, value: -1, to: currentCycle.start) ?? currentCycle.start
+        let previousCycle = account.billingCycleRange(containing: previousReference, calendar: calendar)
+        let previousSamePointEnd = previousCycle.flatMap {
+            calendar.date(byAdding: .day, value: elapsedCycleDays, to: $0.start)
+        }
+        let previousCycleSpendAtSamePoint = previousCycle.map { cycle in
+            scopedTransactions
+                .filter {
+                    $0.account?.id == account.id &&
+                    $0.type == .expense &&
+                    $0.date >= cycle.start &&
+                    $0.date < (previousSamePointEnd ?? cycle.nextStart)
+                }
+                .reduce(0) { $0 + $1.amount }
+        } ?? 0
+        let previousCycleSpend = previousCycle.map { cycle in
+            scopedTransactions
+                .filter {
+                    $0.account?.id == account.id &&
+                    $0.type == .expense &&
+                    $0.date >= cycle.start &&
+                    $0.date < cycle.nextStart
+                }
+                .reduce(0) { $0 + $1.amount }
+        } ?? 0
+        let projectedCycleSpend = max(currentCycleSpend, currentCycleSpend / elapsedRatio)
+        let creditLimit = account.ccCreditLimit
+        let utilizationRatio = creditLimit.map { limit in
+            guard limit > 0 else { return 0.0 }
+            return max(0.0, currentCycleSpend / limit)
+        }
+
+        return CreditCardCycleSnapshot(
+            account: account,
+            daysUntilClosing: daysUntilClosing,
+            currentCycleSpend: currentCycleSpend,
+            previousCycleSpend: previousCycleSpend,
+            previousCycleSpendAtSamePoint: previousCycleSpendAtSamePoint,
+            projectedCycleSpend: projectedCycleSpend,
+            creditLimit: creditLimit,
+            utilizationRatio: utilizationRatio
+        )
+    }
+}
+
+private struct CreditCardCycleSnapshot {
+    let account: Account
+    let daysUntilClosing: Int
+    let currentCycleSpend: Double
+    let previousCycleSpend: Double
+    let previousCycleSpendAtSamePoint: Double
+    let projectedCycleSpend: Double
+    let creditLimit: Double?
+    let utilizationRatio: Double?
 }
 
 private extension Array {

@@ -1182,6 +1182,8 @@ struct CSVImportReviewView: View {
             mutable.resolvedMerchantName = nil
             mutable.resolvedCategory = nil
             mutable.resolvedSubcategory = nil
+            mutable.resolvedKind = .regular
+            mutable.resolvedDestinationAccountId = nil
             
             mutable.isSelected    = false
             mutable.matchDecision = .undecided
@@ -1244,6 +1246,14 @@ struct CSVImportReviewView: View {
                 return mutable
             }
 
+            if let semanticSuggestion = suggestedSemanticResolution(for: item, in: accountTransactions) {
+                mutable.resolvedKind = semanticSuggestion.kind
+                mutable.resolvedDestinationAccountId = semanticSuggestion.destinationAccount?.id
+                mutable.matchDecision = .createNew
+                mutable.isSelected = true
+                return mutable
+            }
+
             // ── Regra 3: Sem match → "Nova" ──────────────────────────────────
             // Usuário decide: criar nova (IA sugere categoria) ou associar manualmente.
             return mutable
@@ -1287,32 +1297,12 @@ struct CSVImportReviewView: View {
                     existing.importHash = hash
                     resolvedId = existing.id
                 } else {
-                    let tx = Transaction(
-                        type: .expense,
-                        amount: item.amount,
-                        date: item.date,
-                        placeName: item.effectivePlaceName,
-                        notes: item.notes.isEmpty ? nil : item.notes
-                    )
-                    tx.category    = item.resolvedCategory
-                    tx.subcategory = item.resolvedSubcategory
-                    tx.account     = account
-                    tx.importHash  = hash
+                    let tx = makeImportedTransaction(from: item, sourceAccount: account, hash: hash)
                     modelContext.insert(tx)
                 }
 
             default:
-                let tx = Transaction(
-                    type: .expense,
-                    amount: item.amount,
-                    date: item.date,
-                    placeName: item.effectivePlaceName,
-                    notes: item.notes.isEmpty ? nil : item.notes
-                )
-                tx.category    = item.resolvedCategory
-                tx.subcategory = item.resolvedSubcategory
-                tx.account     = account
-                tx.importHash  = hash
+                let tx = makeImportedTransaction(from: item, sourceAccount: account, hash: hash)
                 modelContext.insert(tx)
             }
 
@@ -1339,6 +1329,118 @@ struct CSVImportReviewView: View {
         }
 
         persistImportSummary()
+    }
+
+    private func makeImportedTransaction(from item: ImportedTransaction, sourceAccount: Account?, hash: String) -> Transaction {
+        let kind = item.resolvedKind
+        let resolvedPlaceName: String?
+        switch kind {
+        case .cashWithdrawal:
+            let effectivePlaceName = item.effectivePlaceName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            resolvedPlaceName = (effectivePlaceName?.isEmpty == false) ? effectivePlaceName : t("transaction.cashWithdrawalDefaultName")
+        case .regular, .cardBillPayment:
+            resolvedPlaceName = item.effectivePlaceName
+        }
+        let destinationAccount: Account?
+        switch kind {
+        case .regular:
+            destinationAccount = nil
+        case .cardBillPayment:
+            destinationAccount = accounts.first(where: { $0.id == item.resolvedDestinationAccountId })
+                ?? accounts.first(where: { $0.type == .creditCard })
+        case .cashWithdrawal:
+            destinationAccount = accounts.first(where: { $0.id == item.resolvedDestinationAccountId })
+                ?? accounts.first(where: { $0.type == .cash && $0.isDefault })
+                ?? accounts.first(where: { $0.type == .cash })
+        }
+        let tx = Transaction(
+            type: kind == .regular ? .expense : .transfer,
+            kind: kind,
+            amount: item.amount,
+            date: item.date,
+            placeName: resolvedPlaceName,
+            notes: item.notes.isEmpty ? nil : item.notes
+        )
+        tx.account = sourceAccount
+        tx.destinationAccount = destinationAccount
+        tx.importHash = hash
+
+        if kind == .regular {
+            tx.category = item.resolvedCategory
+            tx.subcategory = item.resolvedSubcategory
+        } else {
+            tx.category = nil
+            tx.subcategory = nil
+        }
+
+        return tx
+    }
+
+    private func suggestedSemanticResolution(
+        for item: ImportedTransaction,
+        in accountTransactions: [Transaction]
+    ) -> (kind: TransactionKind, destinationAccount: Account?)? {
+        let target = item.rawDescription.normalizedForMatching()
+        guard !target.isEmpty else { return nil }
+
+        let historicalMatch = accountTransactions
+            .filter { $0.kind != .regular && $0.destinationAccount != nil }
+            .compactMap { tx -> Transaction? in
+                guard let place = tx.placeName?.normalizedForMatching(), !place.isEmpty else { return nil }
+                return place == target ? tx : nil
+            }
+            .max(by: { $0.date < $1.date })
+
+        if let historicalMatch {
+            return (historicalMatch.kind, historicalMatch.destinationAccount)
+        }
+
+        let cashAccount = accounts.first(where: { $0.type == .cash && $0.isDefault })
+            ?? accounts.first(where: { $0.type == .cash })
+
+        if looksLikeCashWithdrawal(target) {
+            return (.cashWithdrawal, cashAccount)
+        }
+
+        if looksLikeCardBillPayment(target) {
+            let cards = accounts.filter { $0.type == .creditCard }
+            let matchedCard = cards.first { card in
+                target.contains(card.name.normalizedForMatching())
+            }
+            return (.cardBillPayment, matchedCard ?? cards.first)
+        }
+
+        return nil
+    }
+
+    private func looksLikeCashWithdrawal(_ normalizedDescription: String) -> Bool {
+        let keywords = [
+            "saque",
+            "cash withdrawal",
+            "withdrawal",
+            "atm",
+            "multibanco",
+            "cajero",
+            "retirada"
+        ]
+        return keywords.contains(where: { normalizedDescription.contains($0) })
+    }
+
+    private func looksLikeCardBillPayment(_ normalizedDescription: String) -> Bool {
+        let keywords = [
+            "pagamento fatura",
+            "pgto fatura",
+            "pago fatura",
+            "payment credit card",
+            "credit card payment",
+            "pagamento cartao",
+            "pago tarjeta",
+            "pago tarjeta credito",
+            "tarjeta credito pago",
+            "card bill payment",
+            "bill payment"
+        ]
+        return keywords.contains(where: { normalizedDescription.contains($0) })
     }
 
     private func persistImportSummary(accountIdOverride: UUID? = nil) {
@@ -1388,6 +1490,7 @@ struct ImportedTransactionRow: View {
 
     @Query private var allCategories: [Category]
     @Query private var aiSettings:    [AISettings]
+    @Query(sort: \Account.createdAt) private var accounts: [Account]
 
     @State private var showLinkSheet           = false
     @State private var showCategorySheet       = false
@@ -1395,6 +1498,30 @@ struct ImportedTransactionRow: View {
     @State private var transactionToPreview:   Transaction? = nil
     @State private var isLoadingAICategory     = false
     @State private var merchantNameDraft       = ""
+
+    private var creditCardAccounts: [Account] {
+        accounts.filter { $0.type == .creditCard }
+    }
+
+    private var cashAccounts: [Account] {
+        accounts.filter { $0.type == .cash }
+    }
+
+    private var defaultCashAccount: Account? {
+        cashAccounts.first(where: { $0.isDefault }) ?? cashAccounts.first
+    }
+
+    private var destinationAccountBinding: Binding<Account?> {
+        Binding(
+            get: {
+                guard let id = item.resolvedDestinationAccountId else { return nil }
+                return accounts.first(where: { $0.id == id })
+            },
+            set: { newAccount in
+                item.resolvedDestinationAccountId = newAccount?.id
+            }
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1419,6 +1546,8 @@ struct ImportedTransactionRow: View {
                                     // Turning the toggle OFF clears the decision
                                     item.matchDecision       = .undecided
                                     item.linkedTransactionId = nil
+                                    item.resolvedKind = .regular
+                                    item.resolvedDestinationAccountId = nil
                                 }
                             }
                         }
@@ -1438,6 +1567,11 @@ struct ImportedTransactionRow: View {
                     Text(item.rawDescription)
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    if item.matchDecision == .createNew, item.resolvedKind != .regular {
+                        Text(item.resolvedKind.label)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(item.resolvedKind == .cardBillPayment ? .blue : .orange)
+                    }
                 }
 
                 Spacer()
@@ -1536,50 +1670,89 @@ struct ImportedTransactionRow: View {
     // MARK: - Decision Buttons
 
     private var decisionButtons: some View {
-        HStack(spacing: 6) {
-            // "Auto" — visível quando process() encontrou um match direto por valor+data
-            if item.recommendedTransactionId != nil {
-                chipButton(
-                    label: t("import.recommended"),
-                    systemImage: "sparkles",
-                    isActive: item.matchDecision == .useMatch,
-                    activeColor: .accentColor
-                ) {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        item.matchDecision = .useMatch
-                        item.isSelected    = true
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                // "Auto" — visível quando process() encontrou um match direto por valor+data
+                if item.recommendedTransactionId != nil {
+                    chipButton(
+                        label: t("import.recommended"),
+                        systemImage: "sparkles",
+                        isActive: item.matchDecision == .useMatch,
+                        activeColor: .accentColor
+                    ) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            item.matchDecision = .useMatch
+                            item.isSelected    = true
+                        }
                     }
                 }
-            }
 
-            // "Nova"
-            chipButton(
-                label: t("import.createNew"),
-                systemImage: isLoadingAICategory ? "sparkles" : "plus.circle",
-                isActive: item.matchDecision == .createNew,
-                activeColor: .blue
-            ) {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    item.matchDecision = .createNew
-                    item.isSelected    = true
+                // "Nova"
+                chipButton(
+                    label: t("import.createNew"),
+                    systemImage: isLoadingAICategory ? "sparkles" : "plus.circle",
+                    isActive: item.matchDecision == .createNew && item.resolvedKind == .regular,
+                    activeColor: .blue
+                ) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        item.matchDecision = .createNew
+                        item.resolvedKind = .regular
+                        item.resolvedDestinationAccountId = nil
+                        item.isSelected    = true
+                    }
+                    triggerAICategoryIfNeeded()
                 }
-                triggerAICategoryIfNeeded()
-            }
 
-            // "Associar" — sempre visível; abre sheet de busca manual
-            chipButton(
-                label: t("import.linkExisting"),
-                systemImage: "link.circle",
-                isActive: item.matchDecision == .linkToExisting,
-                activeColor: .orange
-            ) {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    item.matchDecision = .linkToExisting
-                    item.isSelected    = true
+                // "Associar" — sempre visível; abre sheet de busca manual
+                chipButton(
+                    label: t("import.linkExisting"),
+                    systemImage: "link.circle",
+                    isActive: item.matchDecision == .linkToExisting,
+                    activeColor: .orange
+                ) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        item.matchDecision = .linkToExisting
+                        item.isSelected    = true
+                    }
+                    showLinkSheet = true
                 }
-                showLinkSheet = true
+
+                chipButton(
+                    label: t("import.billPayment"),
+                    systemImage: "creditcard.circle",
+                    isActive: item.matchDecision == .createNew && item.resolvedKind == .cardBillPayment,
+                    activeColor: .blue
+                ) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        item.matchDecision = .createNew
+                        item.resolvedKind = .cardBillPayment
+                        item.resolvedCategory = nil
+                        item.resolvedSubcategory = nil
+                        item.resolvedDestinationAccountId = preferredCreditCardAccount()?.id
+                        item.isSelected = true
+                    }
+                }
+                .disabled(creditCardAccounts.isEmpty)
+
+                chipButton(
+                    label: t("import.cashWithdrawal"),
+                    systemImage: "banknote",
+                    isActive: item.matchDecision == .createNew && item.resolvedKind == .cashWithdrawal,
+                    activeColor: .orange
+                ) {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        item.matchDecision = .createNew
+                        item.resolvedKind = .cashWithdrawal
+                        item.resolvedCategory = nil
+                        item.resolvedSubcategory = nil
+                        item.resolvedDestinationAccountId = defaultCashAccount?.id
+                        item.isSelected = true
+                    }
+                }
+                .disabled(cashAccounts.isEmpty)
             }
         }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: - Chip Button
@@ -1588,20 +1761,26 @@ struct ImportedTransactionRow: View {
                             isActive: Bool, activeColor: Color,
                             action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Label(label, systemImage: systemImage)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(isActive ? activeColor : Color.secondary)
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(
-                    Capsule().fill(isActive
-                        ? activeColor.opacity(0.14)
-                        : Color(uiColor: .tertiarySystemBackground))
-                )
-                .overlay(
-                    Capsule().strokeBorder(isActive
-                        ? activeColor.opacity(0.35)
-                        : Color.clear, lineWidth: 1)
-                )
+            HStack(spacing: 4) {
+                Image(systemName: systemImage)
+                Text(label)
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(isActive ? activeColor : Color.secondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .background(
+                Capsule().fill(isActive
+                    ? activeColor.opacity(0.14)
+                    : Color(uiColor: .tertiarySystemBackground))
+            )
+            .overlay(
+                Capsule().strokeBorder(isActive
+                    ? activeColor.opacity(0.35)
+                    : Color.clear, lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
     }
@@ -1630,7 +1809,11 @@ struct ImportedTransactionRow: View {
 
         case .createNew:
             VStack(spacing: 10) {
-                categoryPicker
+                if item.resolvedKind == .regular {
+                    categoryPicker
+                } else {
+                    semanticDestinationPicker
+                }
                 merchantRenameButton
             }
             .padding(.top, 8)
@@ -1751,6 +1934,41 @@ struct ImportedTransactionRow: View {
         .disabled(isLoadingAICategory)
     }
 
+    private var semanticDestinationPicker: some View {
+        HStack(spacing: 10) {
+            Image(systemName: item.resolvedKind == .cardBillPayment ? "creditcard" : "wallet.bifold")
+                .font(.subheadline)
+                .foregroundStyle(item.resolvedKind == .cardBillPayment ? .blue : .orange)
+                .frame(width: 30, height: 30)
+                .background(
+                    (item.resolvedKind == .cardBillPayment ? Color.blue : Color.orange)
+                        .opacity(0.12)
+                )
+                .clipShape(Circle())
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.resolvedKind == .cardBillPayment ? t("newTx.creditCardDestination") : t("newTx.destinationAccount"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker(
+                    item.resolvedKind == .cardBillPayment ? t("newTx.creditCardDestination") : t("newTx.destinationAccount"),
+                    selection: destinationAccountBinding
+                ) {
+                    Text(t("common.none")).tag(Account?.none)
+                    ForEach(item.resolvedKind == .cardBillPayment ? creditCardAccounts : cashAccounts) { account in
+                        Text(account.name).tag(Account?.some(account))
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(.primary)
+            }
+
+            Spacer()
+        }
+        .padding(10)
+        .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+    }
+
     // MARK: - Link Preview
 
     @ViewBuilder
@@ -1859,7 +2077,7 @@ struct ImportedTransactionRow: View {
     ///   2. AI suggestion    — calls the configured AI provider.
     /// Skips entirely if a category is already set or a request is already in flight.
     private func triggerAICategoryIfNeeded() {
-        guard item.resolvedCategory == nil, !isLoadingAICategory else { return }
+        guard item.resolvedKind == .regular, item.resolvedCategory == nil, !isLoadingAICategory else { return }
 
         // ── 1. Session match (mesma importação) ─────────────────────────────
         if let match = findSessionMatch?(item),
@@ -1886,6 +2104,22 @@ struct ImportedTransactionRow: View {
         // ── 3. AI fallback ───────────────────────────────────────────────────
         guard let settings = aiSettings.first(where: { $0.isConfigured }) else { return }
         Task { await fetchAICategory(settings: settings) }
+    }
+
+    private func preferredCreditCardAccount() -> Account? {
+        if let currentDestination = destinationAccountBinding.wrappedValue,
+           currentDestination.type == .creditCard {
+            return currentDestination
+        }
+
+        let normalizedDescription = item.rawDescription.normalizedForMatching()
+        if let matched = creditCardAccounts.first(where: {
+            normalizedDescription.contains($0.name.normalizedForMatching())
+        }) {
+            return matched
+        }
+
+        return creditCardAccounts.first
     }
 
     /// Searches existing transactions for one whose `placeName` shares a significant
@@ -1941,38 +2175,13 @@ struct ImportedTransactionRow: View {
         isLoadingAICategory = true
         defer { isLoadingAICategory = false }
 
-        let rootCategories = allCategories
-            .filter { $0.parent == nil && ($0.type == .expense || $0.type == .both) }
-            .sorted { $0.sortOrder < $1.sortOrder }
-
-        let options: [AIService.CategorySuggestionOption] = rootCategories.flatMap { cat in
-            let base = AIService.CategorySuggestionOption(
-                categorySystemKey: cat.systemKey,
-                categoryName: cat.name,
-                categoryDisplayName: cat.displayName,
-                subcategorySystemKey: nil,
-                subcategoryName: nil,
-                subcategoryDisplayName: nil
-            )
-            let subs = (cat.subcategories ?? []).sorted { $0.sortOrder < $1.sortOrder }.map {
-                AIService.CategorySuggestionOption(
-                    categorySystemKey: cat.systemKey,
-                    categoryName: cat.name,
-                    categoryDisplayName: cat.displayName,
-                    subcategorySystemKey: $0.systemKey,
-                    subcategoryName: $0.name,
-                    subcategoryDisplayName: $0.displayName
-                )
-            }
-            return [base] + subs
-        }
-
-        let result: AIService.CategorySuggestionResult?
+        let rootCategories = TransactionCategorizationService.rootExpenseCategories(from: allCategories)
+        let suggestion: TransactionCategorizationService.Match?
         do {
-            result = try await AIService.suggestCategory(
-                merchantName: item.rawDescription,
+            suggestion = try await TransactionCategorizationService.suggestCategory(
+                for: item.rawDescription,
                 settings: settings,
-                options: options
+                categories: allCategories
             )
         } catch {
             #if DEBUG
@@ -1983,76 +2192,29 @@ struct ImportedTransactionRow: View {
 
         #if DEBUG
         print("🤖 [AI Category] input : '\(item.rawDescription)'")
-        print("🤖 [AI Category] result: merchant='\(result?.resolvedMerchantName ?? "-")' categoryKey='\(result?.categorySystemKey ?? "-")' subcategoryKey='\(result?.subcategorySystemKey ?? "-")'")
+        print("🤖 [AI Category] result: merchant='\(suggestion?.resolvedMerchantName ?? "-")' categoryKey='\(suggestion?.result.categorySystemKey ?? "-")' subcategoryKey='\(suggestion?.result.subcategorySystemKey ?? "-")'")
         print("🤖 [AI Category] available categories: \(rootCategories.compactMap(\.systemKey).joined(separator: ", "))")
         #endif
 
-        guard let result else { return }
-        if let merchantName = result.resolvedMerchantName?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let suggestion else { return }
+        if let merchantName = suggestion.resolvedMerchantName?.trimmingCharacters(in: .whitespacesAndNewlines),
            !merchantName.isEmpty {
             item.resolvedMerchantName = merchantName
         }
 
-        // Match the AI-returned category name against the user's actual category list.
-        // Strategy (in order of priority):
-        //   1. Exact match (case-insensitive, diacritics folded)
-        //   2. One name contains the other  — e.g. AI says "Lazer", user has "Lazer e Entretenimento"
-        //   3. Token overlap                — e.g. AI says "Entretenimento", user has "Lazer e Entretenimento"
-        let fold: (String) -> String = {
-            $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-        }
-        let aiCat = fold(result.categoryName)
-
         #if DEBUG
-        print("🤖 [AI Category] matching '\(aiCat)' against list...")
+        print("🤖 [AI Category] ✅ matched '\(suggestion.result.categorySystemKey ?? suggestion.result.categoryName)' → '\(suggestion.category.systemKey ?? suggestion.category.name)'")
         #endif
 
-        guard !aiCat.isEmpty else {
-            #if DEBUG
-            print("🤖 [AI Category] ⚠️ AI returned empty category — leaving blank for user")
-            #endif
-            return
-        }
-
-        let matched = rootCategories.first {
-            if let systemKey = result.categorySystemKey {
-                return $0.systemKey == systemKey
-            }
-            return fold($0.name) == aiCat
-        }
-            ?? rootCategories.first { fold($0.name).contains(aiCat) || aiCat.contains(fold($0.name)) }
-            ?? rootCategories.first { !merchantTokens(from: aiCat).intersection(merchantTokens(from: $0.name)).isEmpty }
-
         #if DEBUG
-        if let matched {
-            print("🤖 [AI Category] ✅ matched '\(result.categorySystemKey ?? result.categoryName)' → '\(matched.systemKey ?? matched.name)'")
-        } else {
-            print("🤖 [AI Category] ❌ no match found for '\(result.categorySystemKey ?? result.categoryName)' in [\(rootCategories.compactMap(\.systemKey).joined(separator: ", "))]")
-        }
+        print("🤖 [AI Category] subcategory: AI='\(suggestion.result.subcategoryName ?? "-")' → matched='\(suggestion.subcategory?.name ?? "none")'")
         #endif
-
-        guard let matched else { return }
-
-        let aiSub = result.subcategoryName.map(fold) ?? ""
-        let sub = (matched.subcategories ?? []).first {
-            if let systemKey = result.subcategorySystemKey {
-                return $0.systemKey == systemKey
-            }
-            return fold($0.name) == aiSub
-        }
-            ?? (aiSub.isEmpty ? nil : (matched.subcategories ?? []).first {
-                fold($0.name).contains(aiSub) || aiSub.contains(fold($0.name))
-            })
-
-        #if DEBUG
-        print("🤖 [AI Category] subcategory: AI='\(result.subcategoryName ?? "-")' → matched='\(sub?.name ?? "none")'")
-        #endif
-        item.resolvedCategory     = matched
-        item.resolvedSubcategory  = sub
-        item.resolvedMerchantName = result.resolvedMerchantName
+        item.resolvedCategory     = suggestion.category
+        item.resolvedSubcategory  = suggestion.subcategory
+        item.resolvedMerchantName = suggestion.resolvedMerchantName
 
         // Propagate to other rows in the same import batch with the same merchant
-        onCategoryResolved?(matched, sub, result.resolvedMerchantName)
+        onCategoryResolved?(suggestion.category, suggestion.subcategory, suggestion.resolvedMerchantName)
     }
 }
 

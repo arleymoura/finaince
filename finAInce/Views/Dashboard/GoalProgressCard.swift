@@ -77,27 +77,27 @@ struct GoalProgressCard: View {
 
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(FinAInceColor.insetSurface)
-                        .frame(height: 12)
+                    Capsule()
+                        .fill(status.color.opacity(0.16))
+                        .frame(height: 8)
 
-                    RoundedRectangle(cornerRadius: 6)
+                    Capsule()
                         .fill(status.color.opacity(0.35))
-                        .frame(width: geo.size.width * min(forecast / max(goal.targetAmount, 0.01), 1.0), height: 12)
+                        .frame(width: geo.size.width * min(forecast / max(goal.targetAmount, 0.01), 1.0), height: 8)
                         .animation(.easeOut(duration: 0.5), value: forecast)
 
-                    RoundedRectangle(cornerRadius: 6)
+                    Capsule()
                         .fill(status.color)
-                        .frame(width: geo.size.width * paidProgress, height: 12)
+                        .frame(width: geo.size.width * paidProgress, height: 8)
                         .animation(.easeOut(duration: 0.5), value: spent)
 
                     Rectangle()
                         .fill(FinAInceColor.primarySurface)
-                        .frame(width: 2, height: 16)
+                        .frame(width: 2, height: 12)
                         .offset(x: geo.size.width - 2)
                 }
             }
-            .frame(height: 12)
+            .frame(height: 8)
 
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
@@ -118,12 +118,6 @@ struct GoalProgressCard: View {
             }
         }
         .padding(12)
-        .background(FinAInceColor.tintSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(FinAInceColor.borderSubtle, lineWidth: 1)
-        )
     }
 }
 
@@ -193,7 +187,7 @@ struct CompactGoalProgressCard: View {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Capsule()
-                            .fill(FinAInceColor.insetSurface)
+                            .fill(statusColor.opacity(0.16))
                         Capsule()
                             .fill(statusColor)
                             .frame(width: geo.size.width * progress)
@@ -204,12 +198,6 @@ struct CompactGoalProgressCard: View {
             .padding(10)
             .frame(maxWidth: .infinity)
             .aspectRatio(1, contentMode: .fit)
-            .background(FinAInceColor.tintSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(FinAInceColor.borderSubtle, lineWidth: 1)
-            )
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)

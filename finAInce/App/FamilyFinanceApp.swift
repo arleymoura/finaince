@@ -125,6 +125,7 @@ struct FamilyFinanceApp: App {
             Account.self,
             Category.self,
             Transaction.self,
+            CashWithdrawalAllocation.self,
             ReceiptAttachment.self,
             AISettings.self,
             AIAnalysis.self,
@@ -229,6 +230,7 @@ struct FamilyFinanceApp: App {
                 try? await Task.sleep(for: .seconds(5))
                 importLocalStoreIntoCloudIfNeeded()
                 ensurePrimaryFamilyIfNeeded()
+                ensureCashWalletIfNeeded()
                 deduplicateCloudDataIfNeeded()
                 ensureDefaultDataIfNeeded()
                 configureLocalAIIfAvailable()
@@ -238,6 +240,7 @@ struct FamilyFinanceApp: App {
 
         ensureDefaultDataIfNeeded()
         ensurePrimaryFamilyIfNeeded()
+        ensureCashWalletIfNeeded()
         configureLocalAIIfAvailable()
         Task {
             try? await Task.sleep(for: .seconds(5))
@@ -304,6 +307,30 @@ struct FamilyFinanceApp: App {
         let primaryFamily = Family(name: primaryFamilyName())
         context.insert(primaryFamily)
         backfillOrphanedRecords(in: context, primaryFamily: primaryFamily)
+    }
+
+    @MainActor
+    private func ensureCashWalletIfNeeded() {
+        let context = modelContainer.mainContext
+        let families = ((try? context.fetch(FetchDescriptor<Family>())) ?? [])
+            .sorted(by: { $0.createdAt < $1.createdAt })
+        guard let primaryFamily = families.first else { return }
+
+        let accounts = (try? context.fetch(FetchDescriptor<Account>())) ?? []
+        let hasCashAccount = accounts.contains {
+            ($0.family?.id == primaryFamily.id || $0.family == nil) && $0.type == .cash
+        }
+        guard !hasCashAccount else { return }
+
+        let wallet = Account(
+            name: t("account.walletDefault"),
+            type: .cash,
+            icon: AccountType.cash.defaultIcon,
+            color: "#34C759",
+            isDefault: false
+        )
+        wallet.family = primaryFamily
+        context.insert(wallet)
     }
 
     @MainActor
@@ -492,7 +519,8 @@ struct FamilyFinanceApp: App {
                 color: account.color,
                 isDefault: account.isDefault,
                 ccBillingStartDay: account.ccBillingStartDay,
-                ccBillingEndDay: account.ccBillingEndDay
+                ccBillingEndDay: account.ccBillingEndDay,
+                ccPaymentDueDay: account.ccPaymentDueDay
             )
             copy.id = account.id
             copy.createdAt = account.createdAt

@@ -224,9 +224,22 @@ struct AccountRowView: View {
                     .foregroundStyle(.secondary)
 
                 if account.type == .creditCard,
-                   let start = account.ccBillingStartDay,
-                   let end = account.ccBillingEndDay {
-                    Text(t("account.billingWindow", end, start))
+                   let closingDay = account.billingClosingDay {
+                    Text(t("account.closingDay", closingDay))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if account.type == .creditCard,
+                   let dueDay = account.ccPaymentDueDay {
+                    Text(t("account.paymentDueDay", dueDay))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if account.type == .creditCard,
+                   let creditLimit = account.ccCreditLimit {
+                    Text(t("account.creditLimitValue", creditLimit.asCurrency()))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -243,6 +256,7 @@ struct AccountRowView: View {
 struct AccountFormView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
 
     var account: Account?
 
@@ -250,8 +264,9 @@ struct AccountFormView: View {
     @State private var type: AccountType = .checking
     @State private var icon       = "building.columns.fill"
     @State private var color      = "#007AFF"
-    @State private var ccStartDay = 6
     @State private var ccEndDay   = 5
+    @State private var ccDueDay   = 12
+    @State private var ccLimitText = ""
     @State private var isDefault  = false
     @State private var showDeleteConfirm = false
 
@@ -282,8 +297,23 @@ struct AccountFormView: View {
 
                 if type == .creditCard {
                     Section(t("account.billingWindowTitle")) {
-                        Stepper(t("account.billingStart", ccStartDay), value: $ccStartDay, in: 1...28)
-                        Stepper(t("account.billingEnd", ccEndDay), value: $ccEndDay, in: 1...28)
+                        Stepper(t("account.closingDay", ccEndDay), value: $ccEndDay, in: 1...28)
+                        Stepper(t("account.paymentDueDay", ccDueDay), value: $ccDueDay, in: 1...31)
+                        HStack(spacing: 8) {
+                            Text(t("account.creditLimit"))
+                            Spacer()
+                            Text((CurrencyOption(rawValue: currencyCode)
+                                  ?? CurrencyOption(rawValue: CurrencyOption.defaultCode)
+                                  ?? .usd).symbol)
+                                .font(.body.bold())
+                                .foregroundStyle(.secondary)
+                            TextField(
+                                t("account.creditLimitPlaceholder"),
+                                text: $ccLimitText
+                            )
+                            .keyboardType(.decimalPad)
+                            .multilineTextAlignment(.trailing)
+                        }
                     }
                 }
 
@@ -357,11 +387,14 @@ struct AccountFormView: View {
         icon       = account.icon
         color      = account.color
         isDefault  = account.isDefault
-        ccStartDay = account.ccBillingStartDay ?? 6
-        ccEndDay   = account.ccBillingEndDay   ?? 5
+        ccEndDay   = account.billingClosingDay ?? 5
+        ccDueDay   = account.ccPaymentDueDay ?? 12
+        ccLimitText = account.ccCreditLimit.map(Self.formatAmountInput) ?? ""
     }
 
     private func save() {
+        let creditLimit = parsedCreditLimit
+
         // Se esta conta vai ser padrão, desmarca todas as outras
         if isDefault {
             let all = (try? modelContext.fetch(FetchDescriptor<Account>())) ?? []
@@ -374,8 +407,10 @@ struct AccountFormView: View {
             account.icon              = type.defaultIcon
             account.color             = color
             account.isDefault         = isDefault
-            account.ccBillingStartDay = type == .creditCard ? ccStartDay : nil
+            account.ccBillingStartDay = type == .creditCard ? ccEndDay : nil
             account.ccBillingEndDay   = type == .creditCard ? ccEndDay   : nil
+            account.ccPaymentDueDay   = type == .creditCard ? ccDueDay   : nil
+            account.ccCreditLimit     = type == .creditCard ? creditLimit : nil
         } else {
             let newAccount = Account(
                 name: name,
@@ -383,8 +418,10 @@ struct AccountFormView: View {
                 icon: type.defaultIcon,
                 color: color,
                 isDefault: isDefault,
-                ccBillingStartDay: type == .creditCard ? ccStartDay : nil,
-                ccBillingEndDay:   type == .creditCard ? ccEndDay   : nil
+                ccBillingStartDay: type == .creditCard ? ccEndDay : nil,
+                ccBillingEndDay:   type == .creditCard ? ccEndDay   : nil,
+                ccPaymentDueDay:   type == .creditCard ? ccDueDay   : nil,
+                ccCreditLimit:     type == .creditCard ? creditLimit : nil
             )
             modelContext.insert(newAccount)
         }
@@ -396,6 +433,29 @@ struct AccountFormView: View {
         modelContext.delete(account)
         dismiss()
     }
-    
-    
+
+    private var parsedCreditLimit: Double? {
+        let trimmed = ccLimitText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = Locale.current
+
+        if let number = formatter.number(from: trimmed) {
+            return number.doubleValue
+        }
+
+        let fallback = trimmed.replacingOccurrences(of: ",", with: ".")
+        return Double(fallback)
+    }
+
+    nonisolated private static func formatAmountInput(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 2
+        formatter.minimumFractionDigits = 0
+        formatter.locale = Locale.current
+        return formatter.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
+    }
 }

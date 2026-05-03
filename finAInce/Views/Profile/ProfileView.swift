@@ -42,7 +42,9 @@ struct ProfileView: View {
         colorScheme == .dark ? Color(red: 0.18, green: 0.14, blue: 0.36) : Color.accentColor.opacity(0.76)
     }
     
-    var aiSettings: AISettings? { aiSettingsList.first }
+    var aiSettings: AISettings? {
+        aiSettingsList.first(where: { $0.isConfigured }) ?? aiSettingsList.first
+    }
     private var isRegularLayout: Bool { horizontalSizeClass == .regular }
     private var compactTopInset: CGFloat {
         UIApplication.shared.connectedScenes

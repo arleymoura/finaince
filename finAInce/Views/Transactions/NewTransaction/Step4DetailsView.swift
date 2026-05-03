@@ -23,58 +23,47 @@ struct Step4DetailsView: View {
         accounts.first { $0.isDefault } ?? accounts.first
     }
 
+    var defaultCashAccount: Account? {
+        accounts.first { $0.type == .cash && $0.name == t("account.walletDefault") }
+            ?? accounts.first { $0.type == .cash }
+    }
+
+    var firstCheckingAccount: Account? {
+        accounts.first { $0.type == .checking }
+    }
+
+    var sourceAccounts: [Account] {
+        switch state.kind {
+        case .regular:
+            return accounts
+        case .cardBillPayment:
+            return accounts.filter { $0.type != .creditCard }
+        case .cashWithdrawal:
+            return accounts.filter { $0.type == .checking }
+        }
+    }
+
+    var destinationAccounts: [Account] {
+        switch state.kind {
+        case .regular:
+            return []
+        case .cardBillPayment:
+            return accounts.filter { $0.type == .creditCard }
+        case .cashWithdrawal:
+            return accounts.filter { $0.type == .cash }
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-
-                // ── Seção 1: Transação ─────────────────────────────────────
-                formCard {
-//                    typeRow
-//                    Divider().padding(.leading, 56)
-                    amountRow
-                    Divider().padding(.leading, 56)
-                    placeRow
-                }
-
-                // ── Seção 2: Categoria ─────────────────────────────────────
-                formCard {
-                    categoryRow
-                    if !costCenters.filter(\.isActive).isEmpty {
-                        Divider().padding(.leading, 56)
-                        projectRow
-                    }
-                }
-
-                // ── Seção 3: Conta & Detalhes ──────────────────────────────
-                formCard {
-                    accountRow
-                    Divider().padding(.leading, 56)
-                    dateRow
-                    Divider().padding(.leading, 56)
-                    recurrenceRow
-                    if state.recurrenceType == .installment {
-                        Divider().padding(.leading, 56)
-                        installmentRow
-                    }
-                    if state.recurrenceType == .monthly || state.recurrenceType == .annual {
-                        Divider().padding(.leading, 56)
-                        HStack(spacing: 8) {
-                            Image(systemName: "info.circle")
-                                .foregroundStyle(.secondary)
-                                .frame(width: 32)
-                            Text(state.recurrenceType == .annual
-                                 ? t("newTx.annualNote")
-                                 : t("newTx.installmentsNote"))
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                    }
-                    Divider().padding(.leading, 56)
-                    notesRow
-                    Divider().padding(.leading, 56)
-                    paidRow
+                switch state.kind {
+                case .regular:
+                    regularExpenseSections
+                case .cardBillPayment:
+                    cardBillPaymentSections
+                case .cashWithdrawal:
+                    cashWithdrawalSections
                 }
 
                 formCard {
@@ -154,8 +143,31 @@ struct Step4DetailsView: View {
             .padding()
         }
         .onAppear {
-            if state.account == nil {
-                state.account = defaultAccount
+            if state.account == nil || !sourceAccounts.contains(where: { $0.id == state.account?.id }) {
+                state.account = sourceAccounts.first(where: { $0.isDefault }) ?? sourceAccounts.first
+            }
+            if state.kind == .cardBillPayment,
+               (state.destinationAccount == nil || !destinationAccounts.contains(where: { $0.id == state.destinationAccount?.id })) {
+                state.destinationAccount = destinationAccounts.first
+            }
+            if state.kind == .cashWithdrawal,
+               (state.destinationAccount == nil || !destinationAccounts.contains(where: { $0.id == state.destinationAccount?.id })) {
+                state.destinationAccount = defaultCashAccount ?? destinationAccounts.first
+            }
+            if state.kind == .cashWithdrawal {
+                state.account = firstCheckingAccount
+            }
+        }
+        .onChange(of: state.kind) { _, newKind in
+            switch newKind {
+            case .regular:
+                state.destinationAccount = nil
+            case .cardBillPayment:
+                state.account = sourceAccounts.first(where: { $0.isDefault }) ?? sourceAccounts.first
+                state.destinationAccount = destinationAccounts.first
+            case .cashWithdrawal:
+                state.account = firstCheckingAccount
+                state.destinationAccount = defaultCashAccount ?? destinationAccounts.first
             }
         }
         // Limpa categoria se o tipo mudar para transferência (sem categorias)
@@ -163,6 +175,7 @@ struct Step4DetailsView: View {
             if newType == .transfer {
                 state.category    = nil
                 state.subcategory = nil
+                state.costCenter = nil
             }
         }
         .sheet(isPresented: $showAmountEditor) {
@@ -214,6 +227,87 @@ struct Step4DetailsView: View {
         }
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var regularExpenseSections: some View {
+        Group {
+            formCard {
+                amountRow
+                Divider().padding(.leading, 56)
+                placeRow
+            }
+
+            formCard {
+                categoryRow
+                if !costCenters.filter(\.isActive).isEmpty {
+                    Divider().padding(.leading, 56)
+                    projectRow
+                }
+            }
+
+            formCard {
+                accountRow
+                Divider().padding(.leading, 56)
+                dateRow
+                Divider().padding(.leading, 56)
+                recurrenceRow
+                if state.recurrenceType == .installment {
+                    Divider().padding(.leading, 56)
+                    installmentRow
+                }
+                if state.recurrenceType == .monthly || state.recurrenceType == .annual {
+                    Divider().padding(.leading, 56)
+                    HStack(spacing: 8) {
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 32)
+                        Text(state.recurrenceType == .annual
+                             ? t("newTx.annualNote")
+                             : t("newTx.installmentsNote"))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                }
+                Divider().padding(.leading, 56)
+                notesRow
+                Divider().padding(.leading, 56)
+                paidRow
+            }
+        }
+    }
+
+    private var cardBillPaymentSections: some View {
+        Group {
+            formCard {
+                amountRow
+                Divider().padding(.leading, 56)
+                sourceAccountRow
+                Divider().padding(.leading, 56)
+                destinationAccountRow
+                Divider().padding(.leading, 56)
+                dateRow
+                Divider().padding(.leading, 56)
+                notesRow
+            }
+        }
+    }
+
+    private var cashWithdrawalSections: some View {
+        Group {
+            formCard {
+                amountRow
+                Divider().padding(.leading, 56)
+                sourceAccountRow
+                Divider().padding(.leading, 56)
+                destinationAccountRow
+                Divider().padding(.leading, 56)
+                dateRow
+                Divider().padding(.leading, 56)
+                notesRow
+            }
+        }
     }
 
     // MARK: - Seção Transação
@@ -362,6 +456,45 @@ struct Step4DetailsView: View {
             Picker(t("transaction.account"), selection: $state.account) {
                 Text(t("common.none")).tag(Account?.none)
                 ForEach(accounts) { account in
+                    Label(account.name, systemImage: account.icon).tag(Account?.some(account))
+                }
+            }
+            .font(.body)
+            .labelsHidden()
+        }
+    }
+
+    private var sourceAccountRow: some View {
+        DetailRow(
+            icon: "arrow.up.circle.fill",
+            label: t("newTx.sourceAccount"),
+            labelFont: .body.weight(.medium),
+            contentFont: .body
+        ) {
+            Picker(t("newTx.sourceAccount"), selection: $state.account) {
+                Text(t("common.none")).tag(Account?.none)
+                ForEach(sourceAccounts) { account in
+                    Label(account.name, systemImage: account.icon).tag(Account?.some(account))
+                }
+            }
+            .font(.body)
+            .labelsHidden()
+        }
+    }
+
+    private var destinationAccountRow: some View {
+        DetailRow(
+            icon: "arrow.down.circle.fill",
+            label: state.kind == .cardBillPayment ? t("newTx.creditCardDestination") : t("newTx.destinationAccount"),
+            labelFont: .body.weight(.medium),
+            contentFont: .body
+        ) {
+            Picker(
+                state.kind == .cardBillPayment ? t("newTx.creditCardDestination") : t("newTx.destinationAccount"),
+                selection: $state.destinationAccount
+            ) {
+                Text(t("common.none")).tag(Account?.none)
+                ForEach(destinationAccounts) { account in
                     Label(account.name, systemImage: account.icon).tag(Account?.some(account))
                 }
             }
@@ -528,133 +661,6 @@ struct AmountEditorSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(t("common.ok")) { dismiss() }
                         .fontWeight(.semibold)
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Category Picker Sheet
-
-struct CategoryPickerSheet: View {
-    @Binding var selectedCategory:    Category?
-    @Binding var selectedSubcategory: Category?
-    let transactionType: TransactionType
-
-    @Environment(\.dismiss) private var dismiss
-    @Query private var allCategories: [Category]
-    @State private var expandedCategory:   Category?
-    @State private var showNewCatForm    = false
-    @State private var showNewSubForm    = false
-
-    private let columns = [GridItem(.adaptive(minimum: 90), spacing: 12)]
-
-    private var rootCategories: [Category] {
-        allCategories
-            .filter { $0.parent == nil }
-            .filter {
-                switch transactionType {
-                case .expense:  return $0.type == .expense || $0.type == .both
-                case .transfer: return false
-                }
-            }
-            .sorted { $0.sortOrder < $1.sortOrder }
-    }
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-
-                    // Grade de categorias raiz
-                    LazyVGrid(columns: columns, spacing: 12) {
-                        ForEach(rootCategories) { cat in
-                            CategoryGridItem(
-                                category: cat,
-                                isSelected: selectedCategory?.id == cat.id
-                            )
-                            .onTapGesture {
-                                withAnimation {
-                                    selectedCategory    = cat
-                                    selectedSubcategory = nil
-                                    expandedCategory    = cat
-                                }
-                            }
-                        }
-
-                        // Célula "Nova Categoria"
-                        AddCategoryCell(label: t("newTx.newCategoryCell"))
-                            .onTapGesture { showNewCatForm = true }
-                    }
-                    .padding(.horizontal)
-
-                    // Subcategorias da categoria expandida
-                    if let expanded = expandedCategory {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(t("transaction.subcategory"))
-                                .font(.headline)
-                                .padding(.horizontal)
-
-                            LazyVGrid(columns: columns, spacing: 12) {
-                                ForEach(
-                                    (expanded.subcategories ?? []).sorted { $0.sortOrder < $1.sortOrder }
-                                ) { sub in
-                                    CategoryGridItem(
-                                        category: sub,
-                                        isSelected: selectedSubcategory?.id == sub.id,
-                                        isSmall: true
-                                    )
-                                    .onTapGesture {
-                                        withAnimation { selectedSubcategory = sub }
-                                    }
-                                }
-
-                                // Célula "Nova Subcategoria"
-                                AddCategoryCell(isSmall: true, label: t("newTx.newCategoryCell"))
-                                    .onTapGesture { showNewSubForm = true }
-                            }
-                            .padding(.horizontal)
-                        }
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                        .animation(.easeInOut, value: expandedCategory?.id)
-                    }
-                }
-                .padding(.vertical)
-            }
-            .navigationTitle(t("newTx.categoryTitle"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(t("common.cancel")) { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(t("common.ok")) { dismiss() }
-                        .fontWeight(.semibold)
-                        .disabled(selectedCategory == nil)
-                }
-            }
-        }
-        .onAppear {
-            // Pré-expande a categoria já selecionada
-            if let cat = selectedCategory {
-                expandedCategory = cat
-            }
-        }
-        // Sheet: nova categoria raiz
-        .sheet(isPresented: $showNewCatForm) {
-            CategoryFormView { newCat in
-                withAnimation {
-                    selectedCategory    = newCat
-                    selectedSubcategory = nil
-                    expandedCategory    = newCat
-                }
-            }
-        }
-        // Sheet: nova subcategoria do pai expandido
-        .sheet(isPresented: $showNewSubForm) {
-            if let parent = expandedCategory {
-                CategoryFormView(parent: parent) { newSub in
-                    withAnimation { selectedSubcategory = newSub }
                 }
             }
         }

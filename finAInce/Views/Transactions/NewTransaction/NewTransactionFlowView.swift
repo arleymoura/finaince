@@ -6,12 +6,15 @@ import SwiftData
 final class NewTransactionState {
     var amount: Double = 0
     var type: TransactionType = .expense
+    var kind: TransactionKind = .regular
+    var allowsKindSelection: Bool = true
     var isPaid: Bool = true
     var placeName: String = ""
     var placeGoogleId: String? = nil
     var category: Category? = nil
     var subcategory: Category? = nil
     var account: Account? = nil
+    var destinationAccount: Account? = nil
     var date: Date = Date()
     var recurrenceType: RecurrenceType = .none
     var installmentTotal: Int = 2
@@ -26,6 +29,7 @@ final class NewTransactionState {
 struct NewTransactionFlowView: View {
     /// Se `true`, o scanner de recibos abre automaticamente ao entrar no step 1.
     var startWithScanner: Bool = false
+    var onDidSave: ((Transaction) -> Void)? = nil
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -41,6 +45,12 @@ struct NewTransactionFlowView: View {
         _step = State(initialValue: jumpToReview ? 4 : 1)
     }
 
+    init(initialState: NewTransactionState, jumpToReview: Bool = true, onDidSave: ((Transaction) -> Void)? = nil) {
+        self.onDidSave = onDidSave
+        _state = State(initialValue: initialState)
+        _step = State(initialValue: jumpToReview ? 4 : 1)
+    }
+
     /// Inicia o fluxo do zero (behavior padrão).
     init(startWithScanner: Bool = false) {
         self.startWithScanner = startWithScanner
@@ -52,7 +62,7 @@ struct NewTransactionFlowView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 // Indicador de etapas
-                ProgressIndicator(currentStep: step)
+                ProgressIndicator(currentStep: step, transactionKind: state.kind)
                     .padding(.horizontal, 20)
                     .padding(.top, 12)
                     .padding(.bottom, 8)
@@ -155,6 +165,13 @@ struct NewTransactionFlowView: View {
         case 1: return state.amount > 0
         case 2: return true   // local é opcional
         case 3: return state.category != nil
+        case 4:
+            switch state.kind {
+            case .regular:
+                return true
+            case .cardBillPayment, .cashWithdrawal:
+                return state.account != nil && state.destinationAccount != nil
+            }
         default: return true
         }
     }
@@ -162,14 +179,22 @@ struct NewTransactionFlowView: View {
     private func goForward() {
         navigationDirection = .forward
         withAnimation(.easeInOut(duration: 0.25)) {
-            step += 1
+            if step == 1 && state.kind != .regular {
+                step = 4
+            } else {
+                step += 1
+            }
         }
     }
 
     private func goBack() {
         navigationDirection = .backward
         withAnimation(.easeInOut(duration: 0.25)) {
-            step -= 1
+            if step == 4 && state.kind != .regular {
+                step = 1
+            } else {
+                step -= 1
+            }
         }
     }
 
@@ -186,11 +211,20 @@ struct NewTransactionFlowView: View {
     // MARK: - Save
 
     private func saveTransaction() {
+        let kind = state.kind
+        let normalizedPlaceName = state.placeName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultPlaceName: String? = switch kind {
+        case .cashWithdrawal:
+            t("transaction.cashWithdrawalDefaultName")
+        case .regular, .cardBillPayment:
+            nil
+        }
         let transaction = Transaction(
             type: state.type,
+            kind: kind,
             amount: state.amount,
             date: state.date,
-            placeName: state.placeName.isEmpty ? nil : state.placeName,
+            placeName: normalizedPlaceName.isEmpty ? defaultPlaceName : normalizedPlaceName,
             placeGoogleId: state.placeGoogleId,
             notes: state.notes.isEmpty ? nil : state.notes,
             recurrenceType: state.recurrenceType,
@@ -198,9 +232,10 @@ struct NewTransactionFlowView: View {
             isPaid: state.isPaid
         )
         transaction.account      = state.account
-        transaction.category     = state.category
-        transaction.subcategory  = state.subcategory
-        transaction.costCenterId = state.costCenter?.id
+        transaction.destinationAccount = state.destinationAccount
+        transaction.category     = kind == .regular ? state.category : nil
+        transaction.subcategory  = kind == .regular ? state.subcategory : nil
+        transaction.costCenterId = kind == .regular ? state.costCenter?.id : nil
 
         modelContext.insert(transaction)
         _ = try? ReceiptAttachmentStore.persistDrafts(state.receiptDrafts, to: transaction, in: modelContext)
@@ -222,6 +257,7 @@ struct NewTransactionFlowView: View {
         }
 
         didSave = true
+        onDidSave?(transaction)
         dismiss()
     }
 }
@@ -230,13 +266,24 @@ struct NewTransactionFlowView: View {
 
 struct ProgressIndicator: View {
     let currentStep: Int
+    let transactionKind: TransactionKind
 
-    private let steps: [ProgressStep] = [
-        .init(number: 1, icon: "dollarsign.circle", titleKey: "newTx.step1"),
-        .init(number: 2, icon: "storefront", titleKey: "newTx.step2"),
-        .init(number: 3, icon: "square.grid.2x2", titleKey: "newTx.step3"),
-        .init(number: 4, icon: "checklist", titleKey: "newTx.step4")
-    ]
+    private var steps: [ProgressStep] {
+        switch transactionKind {
+        case .regular:
+            return [
+                .init(number: 1, icon: "dollarsign.circle", titleKey: "newTx.step1"),
+                .init(number: 2, icon: "storefront", titleKey: "newTx.step2"),
+                .init(number: 3, icon: "square.grid.2x2", titleKey: "newTx.step3"),
+                .init(number: 4, icon: "checklist", titleKey: "newTx.step4")
+            ]
+        case .cardBillPayment, .cashWithdrawal:
+            return [
+                .init(number: 1, icon: "dollarsign.circle", titleKey: "newTx.step1"),
+                .init(number: 4, icon: "checklist", titleKey: "newTx.step4")
+            ]
+        }
+    }
 
     var body: some View {
         HStack(spacing: 8) {

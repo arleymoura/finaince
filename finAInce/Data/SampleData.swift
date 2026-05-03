@@ -15,6 +15,14 @@ struct SampleData {
             color: "#8B5CF6",
             isDefault: true
         )
+        let wallet = Account(
+            name: t("account.walletDefault"),
+            type: .cash,
+            balance: 320.00,
+            icon: "wallet.bifold.fill",
+            color: "#34C759",
+            isDefault: false
+        )
         let creditCard = Account(
             name: "Nubank Cartão",
             type: .creditCard,
@@ -23,9 +31,11 @@ struct SampleData {
             color: "#8B5CF6",
             isDefault: false,
             ccBillingStartDay: 1,
-            ccBillingEndDay: 10
+            ccBillingEndDay: 10,
+            ccCreditLimit: 5_000
         )
         modelContext.insert(checking)
+        modelContext.insert(wallet)
         modelContext.insert(creditCard)
 
         // MARK: - Busca categorias

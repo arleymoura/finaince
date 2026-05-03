@@ -9,6 +9,7 @@ struct SettingsView: View {
     @Query private var aiSettingsList: [AISettings]
 
     @AppStorage("notif.pendingExpense") private var paymentAlert = false
+    @AppStorage("notif.creditCardCycle") private var creditCardAlert = false
     @AppStorage("notif.goalAlert")      private var goalAlert   = false
     @AppStorage("app.currencyCode")     private var currencyCode = CurrencyOption.defaultCode
     @AppStorage("app.colorScheme")      private var colorScheme  = "light"
@@ -25,7 +26,9 @@ struct SettingsView: View {
         currentColorScheme == .dark ? Color(red: 0.18, green: 0.14, blue: 0.36) : Color.accentColor.opacity(0.72)
     }
 
-    var aiSettings: AISettings? { aiSettingsList.first }
+    var aiSettings: AISettings? {
+        aiSettingsList.first(where: { $0.isConfigured }) ?? aiSettingsList.first
+    }
 
     var body: some View {
         NavigationStack {
@@ -261,6 +264,22 @@ struct SettingsView: View {
                 Task {
                     if enabled { await NotificationService.shared.requestPermission() }
                     NotificationService.shared.schedulePaymentNotifications(context: modelContext)
+                }
+            }
+
+            Toggle(isOn: $creditCardAlert) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(t("profile.notifCardCycle"))
+                        .font(.subheadline)
+                    Text(t("profile.notifCardCycleDesc"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .onChange(of: creditCardAlert) { _, enabled in
+                Task {
+                    if enabled { await NotificationService.shared.requestPermission() }
+                    NotificationService.shared.scheduleCreditCardNotifications(context: modelContext)
                 }
             }
 

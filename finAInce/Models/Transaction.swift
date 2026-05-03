@@ -27,6 +27,23 @@ enum TransactionType: String, Codable, CaseIterable {
     }
 }
 
+enum TransactionKind: String, Codable, CaseIterable {
+    case regular = "regular"
+    case cardBillPayment = "card_bill_payment"
+    case cashWithdrawal = "cash_withdrawal"
+
+    var label: String {
+        switch self {
+        case .regular:
+            return t("transaction.kind.expense")
+        case .cardBillPayment:
+            return t("transaction.kind.cardBillPayment")
+        case .cashWithdrawal:
+            return t("transaction.kind.cashWithdrawal")
+        }
+    }
+}
+
 enum RecurrenceType: String, Codable, CaseIterable {
     case none        = "none"
     case monthly     = "monthly"
@@ -58,6 +75,7 @@ enum RecurrenceType: String, Codable, CaseIterable {
 final class Transaction {
     var id: UUID = UUID()
     var type: TransactionType = TransactionType.expense
+    var kind: TransactionKind = TransactionKind.regular
     var amount: Double = 0
     var date: Date = Date()
     var placeName: String?
@@ -84,8 +102,15 @@ final class Transaction {
     @Relationship(deleteRule: .cascade, inverse: \ReceiptAttachment.transaction)
     var receiptAttachments: [ReceiptAttachment]?
 
+    @Relationship(deleteRule: .cascade, inverse: \CashWithdrawalAllocation.withdrawalTransaction)
+    var outgoingCashAllocations: [CashWithdrawalAllocation]?
+
+    @Relationship(deleteRule: .cascade, inverse: \CashWithdrawalAllocation.expenseTransaction)
+    var incomingCashAllocations: [CashWithdrawalAllocation]?
+
     init(
         type: TransactionType,
+        kind: TransactionKind = .regular,
         amount: Double,
         date: Date = Date(),
         placeName: String? = nil,
@@ -99,6 +124,7 @@ final class Transaction {
     ) {
         self.id = UUID()
         self.type = type
+        self.kind = kind
         self.amount = amount
         self.date = date
         self.placeName = placeName
@@ -115,6 +141,30 @@ final class Transaction {
 
 // MARK: - Recurrence helpers
 extension Transaction {
+    var allocatedCashAmount: Double {
+        (outgoingCashAllocations ?? []).reduce(0) { $0 + $1.allocatedAmount }
+    }
+
+    var remainingCashAmount: Double {
+        max(0, amount - allocatedCashAmount)
+    }
+
+    var allocatedExpenses: [Transaction] {
+        (outgoingCashAllocations ?? [])
+            .compactMap(\.expenseTransaction)
+            .sorted { $0.date > $1.date }
+    }
+
+    var parentCashWithdrawal: Transaction? {
+        (incomingCashAllocations ?? [])
+            .compactMap(\.withdrawalTransaction)
+            .sorted { $0.date > $1.date }
+            .first
+    }
+
+    var allocatedFromCashWithdrawalAmount: Double {
+        (incomingCashAllocations ?? []).reduce(0) { $0 + $1.allocatedAmount }
+    }
 
     /// Gera as transações futuras para um parcelamento.
     static func generateInstallments(

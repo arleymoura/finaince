@@ -27,6 +27,20 @@ struct AIServiceResult {
     }
 }
 
+struct UserProfileContext: Sendable {
+    let name: String
+    let adultsCount: Int
+    let childrenCount: Int
+
+    var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var hasDefinedHousehold: Bool {
+        adultsCount > 0 || childrenCount > 0
+    }
+}
+
 struct AIService {
 
     // MARK: - Error
@@ -58,6 +72,8 @@ struct AIService {
         accounts: [Account] = [],
         categories: [Category] = [],
         projects: [CostCenter] = [],
+        families: [Family] = [],
+        userProfile: UserProfileContext = .init(name: "", adultsCount: 0, childrenCount: 0),
         currencyCode: String = CurrencyOption.defaultCode,
         imageData: Data? = nil
     ) async throws -> AIServiceResult {
@@ -74,8 +90,15 @@ struct AIService {
             let context = FinanceContext(
                 transactions:       transactions.map { $0.asSnapshot() },
                 goals:              goals.map { $0.asSnapshot(monthExpenses: thisMonthExpenses) },
-                accounts:           accounts.map { $0.asSnapshot() },
+                accounts:           accounts.map { $0.asSnapshot(transactions: transactions, referenceDate: now) },
+                projects:           projects.map { $0.asSnapshot(currencyCode: currencyCode, transactions: transactions) },
+                families:           families.map { $0.asSnapshot() },
                 categories:         FinanceContext.registeredExpenseCategories(from: categories),
+                userProfile:        .init(
+                    name: userProfile.trimmedName,
+                    adultsCount: userProfile.adultsCount,
+                    childrenCount: userProfile.childrenCount
+                ),
                 currencyCode:       currencyCode,
                 appLanguageCode:    LanguageManager.shared.effective.rawValue,
                 localeIdentifier:   Locale.current.identifier,
@@ -100,8 +123,12 @@ struct AIService {
             accounts: accounts,
             categories: categories,
             projects: projects,
+            families: families,
+            userProfile: userProfile,
             currencyCode: currencyCode
         )
+        debugPrintPrompt(label: "AI General Prompt", prompt: system)
+        debugPrintPrompt(label: "AI External Prompt [\(settings.provider.rawValue)]", prompt: system)
 
         // ── Provedores cloud ───────────────────────────────────────────────
         guard let apiKey = KeychainHelper.load(forKey: settings.provider.keychainKey),
@@ -190,6 +217,8 @@ struct AIService {
         accounts: [Account],
         categories: [Category],
         projects: [CostCenter],
+        families: [Family],
+        userProfile: UserProfileContext,
         currencyCode: String
     ) -> String {
         let cal = Calendar.current
@@ -228,34 +257,13 @@ struct AIService {
             .map { "• \($0.key): \($0.value.asCurrency(currencyCode))" }
             .joined(separator: "\n")
 
-        let txLines = thisMonth.prefix(30).map { tx in
-            let place = tx.placeName ?? "unknown merchant"
-            let cat   = tx.category?.displayName ?? "uncategorized"
-            return "• \(tx.amount.asCurrency(currencyCode)) — \(place) (\(cat))"
-        }.joined(separator: "\n")
-
-        let recentTransactionsBlock = transactions
-            .sorted { $0.date > $1.date }
-            .prefix(160)
-            .map { transaction in
-                let merchant = transaction.placeName ?? transaction.category?.displayName ?? "No description"
-                let category = transaction.category?.displayName ?? "Uncategorized"
-                let subcategory = transaction.subcategory?.displayName ?? "None"
-                let accountName = transaction.account?.name ?? "No account"
-                let notes = transaction.notes?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-                    ? transaction.notes!.replacingOccurrences(of: "\n", with: " ")
-                    : "None"
-                let projectName = projects.first(where: { $0.id == transaction.costCenterId })?.name ?? "None"
-                let receiptFlag = (transaction.receiptAttachments ?? []).isEmpty ? "no" : "yes"
-                return "- transaction | id=\(transaction.id.uuidString) | date=\(transaction.date.formatted(.dateTime.year().month().day())) | amount=\(transaction.amount.asCurrency(currencyCode)) | merchant=\(merchant) | category=\(category) | subcategory=\(subcategory) | account=\(accountName) | project=\(projectName) | notes=\(notes) | receipt=\(receiptFlag) | link=finaince://transaction/\(transaction.id.uuidString)"
-            }
-            .joined(separator: "\n")
-
         let goalLinksBlock = goals
             .sorted { $0.createdAt > $1.createdAt }
             .map { goal in
                 let categoryName = goal.category?.displayName ?? "All spending"
-                return "- goal | id=\(goal.id.uuidString) | title=\(goal.title) | target=\(goal.targetAmount.asCurrency(currencyCode)) | category=\(categoryName) | link=finaince://goal/\(goal.id.uuidString)"
+                let spent = goalSpent(goal, transactions: thisMonth).asCurrency(currencyCode)
+                let status = goal.isActive ? "active" : "inactive"
+                return "- goal | id=\(goal.id.uuidString) | title=\(goal.title) | target=\(goal.targetAmount.asCurrency(currencyCode)) | spent_this_month=\(spent) | category=\(categoryName) | status=\(status) | link=finaince://goal/\(goal.id.uuidString)"
             }
             .joined(separator: "\n")
 
@@ -276,22 +284,65 @@ struct AIService {
             .sorted { $0.updatedAt > $1.updatedAt }
             .map { project in
                 let status = project.isActive ? "active" : "inactive"
-                return "- project | id=\(project.id.uuidString) | name=\(project.name) | status=\(status) | link=finaince://project/\(project.id.uuidString)"
+                let budget = project.budget.map { $0.asCurrency(currencyCode) } ?? "none"
+                let spent = projectSpent(project, transactions: transactions).asCurrency(currencyCode)
+                let description = cleanedText(project.desc) ?? "none"
+                return "- project | id=\(project.id.uuidString) | name=\(project.name) | status=\(status) | budget=\(budget) | spent=\(spent) | description=\(description) | link=finaince://project/\(project.id.uuidString)"
             }
             .joined(separator: "\n")
 
         let accountLinksBlock = accounts
             .sorted { $0.createdAt > $1.createdAt }
             .map { account in
-                return "- account | id=\(account.id.uuidString) | name=\(account.name) | type=\(account.type.rawValue) | balance=\(account.balance.asCurrency(currencyCode)) | default=\(account.isDefault) | link=finaince://account/\(account.id.uuidString)"
+                let billingCycleStart = account.billingStartDay.map(String.init) ?? "none"
+                let billingCycleEnd = account.billingCycleEndDay.map(String.init) ?? "none"
+                let billingClosing = account.billingClosingDay.map(String.init) ?? "none"
+                let paymentDue = account.ccPaymentDueDay.map(String.init) ?? "none"
+                let semanticType = semanticAccountType(for: account)
+                let aliases = accountSearchAliases(for: account).joined(separator: ", ")
+                let cardContext = creditCardAccountContextBlock(for: account, transactions: transactions, currencyCode: currencyCode)
+                return "- account | id=\(account.id.uuidString) | name=\(account.name) | type=\(account.type.rawValue) | type_label=\(account.type.label) | semantic_type=\(semanticType) | aliases=\(aliases) | default=\(account.isDefault) | billing_cycle_start_day=\(billingCycleStart) | billing_cycle_end_day=\(billingCycleEnd) | billing_closing_day=\(billingClosing) | payment_due_day=\(paymentDue)\(cardContext) | link=finaince://account/\(account.id.uuidString)"
             }
             .joined(separator: "\n")
+
+        let profileBlock = userProfileBlock(
+            profile: userProfile,
+            families: families,
+            goals: goals,
+            accounts: accounts,
+            projects: projects
+        )
+
+        let familyBlock = familyLinksBlock(
+            families: families,
+            transactions: transactions,
+            goals: goals,
+            accounts: accounts,
+            currencyCode: currencyCode
+        )
 
         let relevantTransactionsBlock = relevantTransactionsBlock(
             for: latestUserQueryContext,
             transactions: transactions,
             projects: projects,
             currencyCode: currencyCode
+        )
+
+        let relevantEntitiesBlock = relevantEntitiesBlock(
+            for: latestUserQueryContext,
+            families: families,
+            goals: goals,
+            accounts: accounts,
+            projects: projects,
+            transactions: transactions,
+            currencyCode: currencyCode
+        )
+
+        debugPrintRAG(
+            label: "AI External Retrieval",
+            query: latestUserQueryContext,
+            transactionBlock: relevantTransactionsBlock,
+            entityBlock: relevantEntitiesBlock
         )
 
         return """
@@ -323,6 +374,16 @@ struct AIService {
         - Keep responses short: at most 3 short paragraphs or one concise list.
         - Interpret the data instead of repeating raw numbers without context.
         - When relevant, suggest where the user may be able to save money.
+        - If the user asks whether they have a credit card, card bill, wallet, cash account, or checking account, inspect the Accounts catalog first.
+        - If the user asks about their card, invoice, bill closing, current bill amount, closing forecast, card limit, or available card limit, inspect the Accounts catalog first and prioritize any estimated_bill, credit_limit, or available_credit_estimate data present there.
+        - Treat these app concepts as distinct:
+          • credit card account = account with semantic_type credit_card_account
+          • cash / wallet = account with semantic_type cash_wallet_account
+          • checking / bank account = account with semantic_type bank_checking_account
+          • bill payment = a card bill payment transaction, not the same as a purchase on the card
+          • cash withdrawal = moving money from checking to cash/wallet, not an expense by itself
+          • card closing forecast = estimated sum of posted expense transactions inside the current billing window
+        - If a credit card account shows credit_limit=User did not define a limit, mention that the user should add the card limit in the account settings because that improves available-limit answers and card insights.
 
         ## Time context (critical)
         - Today's date is: \(now.formatted(.dateTime.day().month(.wide).year()))
@@ -340,9 +401,11 @@ struct AIService {
           ask one direct clarification question before answering.
         - If the user asks to open, inspect, review, compare, edit, or navigate somewhere, prefer ending the answer with 1–3 markdown deep links when a valid destination exists.
         - To open a receipt, use the transaction link of a transaction marked with receipt=yes.
-        - You DO have transaction-level data in the navigation catalog below. Do not say you only have category totals if transaction lines are present.
-        - If the user asks you to find a transaction, search the transaction catalog using merchant, category, subcategory, notes, account, project, amount, and receipt flag.
-        - When you find likely matches, mention the best 1 to 3 matches and attach direct transaction links.
+        - You DO have transaction-level data when the relevant transactions section below contains matches. Do not say you only have category totals if transaction matches are present there.
+        - If the user asks you to find a transaction, search the relevant transaction matches using merchant, category, subcategory, notes, account, project, amount, and receipt flag.
+        - If the user explicitly asks to list transactions, list every recovered transaction match up to the retrieval limit and attach direct links when useful.
+        - If the user did not explicitly ask for a full list, summarize only the most relevant 1 to 3 matches.
+        - If the user asks for transactions but does not specify a period, assume the current month by default.
         - If the user asks about a category such as travel, groceries, fuel, pharmacy, or restaurants, search the transaction catalog for matching category and subcategory names before answering.
         - If a "transactions most relevant to the latest user request" section exists below, use it as your primary source before falling back to the full transaction catalog.
         - If the user wants to open or review the transactions of a category, prefer the category transactions link in the format finaince://transactions/category/CATEGORY_ID instead of the generic transactions list.
@@ -365,13 +428,13 @@ struct AIService {
         All transactions below already belong to this current month.
         Do not reinterpret or shift the time period.
 
+        User profile and household:
+        \(profileBlock)
+
         Current month expenses — Total: \(total.asCurrency(currencyCode))
 
         By category:
         \(catLines.isEmpty ? "No expenses recorded." : catLines)
-
-        Recent transactions:
-        \(txLines.isEmpty ? "No expenses recorded." : txLines)
 
         ## Transactions most relevant to the latest user request
         User request context:
@@ -380,9 +443,12 @@ struct AIService {
         Relevant matches:
         \(relevantTransactionsBlock)
 
+        ## Non-transaction entities most relevant to the latest user request
+        \(relevantEntitiesBlock)
+
         ## Navigation catalog with real IDs
-        Transactions:
-        \(recentTransactionsBlock.isEmpty ? "- No transactions available for linking." : recentTransactionsBlock)
+        Families:
+        \(familyBlock.isEmpty ? "- No family context available." : familyBlock)
 
         Goals:
         \(goalLinksBlock.isEmpty ? "- No goals available for linking." : goalLinksBlock)
@@ -396,6 +462,260 @@ struct AIService {
         Accounts:
         \(accountLinksBlock.isEmpty ? "- No accounts available for linking." : accountLinksBlock)
         """
+    }
+
+    private static func debugPrintPrompt(label: String, prompt: String) {
+#if DEBUG
+        print("\n========== \(label) ==========\n\(prompt)\n========== END \(label) ==========\n")
+#endif
+    }
+
+    private static func debugPrintRAG(
+        label: String,
+        query: String,
+        transactionBlock: String,
+        entityBlock: String
+    ) {
+#if DEBUG
+        print(
+            """
+
+            ========== \(label) ==========
+            Query:
+            \(query.isEmpty ? "None." : query)
+
+            Transactions RAG:
+            \(transactionBlock)
+
+            Entities RAG:
+            \(entityBlock)
+            ========== END \(label) ==========
+
+            """
+        )
+#endif
+    }
+
+    private static func cleanedText(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let cleaned = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
+    private static func semanticAccountType(for account: Account) -> String {
+        switch account.type {
+        case .checking:
+            return "bank_checking_account"
+        case .cash:
+            return "cash_wallet_account"
+        case .creditCard:
+            return "credit_card_account"
+        }
+    }
+
+    private static func accountSearchAliases(for account: Account) -> [String] {
+        switch account.type {
+        case .checking:
+            return ["checking", "bank", "current account", "conta corrente"]
+        case .cash:
+            return ["cash", "wallet", "money", "carteira", "dinheiro"]
+        case .creditCard:
+            return ["credit card", "card", "invoice", "fatura", "cartao de credito"]
+        }
+    }
+
+    private static func creditCardAccountContextBlock(
+        for account: Account,
+        transactions: [Transaction],
+        currencyCode: String,
+        referenceDate: Date = Date()
+    ) -> String {
+        guard account.type == .creditCard else {
+            return ""
+        }
+
+        let creditLimitText = account.ccCreditLimit.map { $0.asCurrency(currencyCode) } ?? "User did not define a limit"
+        let fallbackAvailableCredit = account.ccCreditLimit.map { $0.asCurrency(currencyCode) } ?? "User did not define a limit"
+
+        guard let cycle = account.billingCycleRange(containing: referenceDate) else {
+            return " | credit_limit=\(creditLimitText) | available_credit_estimate=\(fallbackAvailableCredit)"
+        }
+
+        let calendar = Calendar.current
+        let amount = transactions
+            .filter { $0.type == .expense }
+            .filter { $0.account?.id == account.id }
+            .filter { $0.date >= cycle.start && $0.date < cycle.nextStart }
+            .reduce(0) { $0 + $1.amount }
+        let days = max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: referenceDate), to: cycle.nextStart).day ?? 0)
+        let availableCreditEstimate = account.ccCreditLimit.map { ($0 - amount).asCurrency(currencyCode) } ?? "User did not define a limit"
+
+        return " | credit_limit=\(creditLimitText) | estimated_bill=\(amount.asCurrency(currencyCode)) | available_credit_estimate=\(availableCreditEstimate) | billing_window_start=\(cycle.start.formatted(.dateTime.year().month().day())) | billing_window_end=\(cycle.end.formatted(.dateTime.year().month().day())) | days_until_closing=\(days)"
+    }
+
+    private static func goalSpent(_ goal: Goal, transactions: [Transaction]) -> Double {
+        transactions
+            .filter { $0.type == .expense }
+            .filter { goal.matches($0) }
+            .reduce(0) { $0 + $1.amount }
+    }
+
+    private static func projectSpent(_ project: CostCenter, transactions: [Transaction]) -> Double {
+        transactions
+            .filter { $0.costCenterId == project.id }
+            .reduce(0) { $0 + $1.amount }
+    }
+
+    private static func householdSummary(for profile: UserProfileContext) -> String {
+        guard profile.hasDefinedHousehold else { return "not defined" }
+        return "adults=\(profile.adultsCount), children=\(profile.childrenCount), total_people=\(profile.adultsCount + profile.childrenCount)"
+    }
+
+    private static func userProfileBlock(
+        profile: UserProfileContext,
+        families: [Family],
+        goals: [Goal],
+        accounts: [Account],
+        projects: [CostCenter]
+    ) -> String {
+        let displayName = profile.trimmedName.isEmpty ? "not defined" : profile.trimmedName
+        let familyNames = families.map(\.name).filter { !$0.isEmpty }.joined(separator: ", ")
+        let familyValue = familyNames.isEmpty ? "not defined" : familyNames
+
+        return [
+            "- user_name: \(displayName)",
+            "- household: \(householdSummary(for: profile))",
+            "- families: \(familyValue)",
+            "- accounts_count: \(accounts.count)",
+            "- goals_count: \(goals.count)",
+            "- projects_count: \(projects.count)"
+        ].joined(separator: "\n")
+    }
+
+    private static func familyLinksBlock(
+        families: [Family],
+        transactions: [Transaction],
+        goals: [Goal],
+        accounts: [Account],
+        currencyCode: String
+    ) -> String {
+        families
+            .sorted { $0.createdAt > $1.createdAt }
+            .map { family in
+                let linkedTransactions = transactions.filter { $0.family?.id == family.id }
+                let linkedAccounts = accounts.filter { $0.family?.id == family.id }
+                let linkedGoals = goals.filter { $0.family?.id == family.id }
+                let totalExpenses = linkedTransactions
+                    .filter { $0.type == .expense }
+                    .reduce(0) { $0 + $1.amount }
+                return "- family | id=\(family.id.uuidString) | name=\(family.name) | accounts=\(linkedAccounts.count) | goals=\(linkedGoals.count) | transactions=\(linkedTransactions.count) | expense_total=\(totalExpenses.asCurrency(currencyCode))"
+            }
+            .joined(separator: "\n")
+    }
+
+    private static func relevantEntitiesBlock(
+        for query: String,
+        families: [Family],
+        goals: [Goal],
+        accounts: [Account],
+        projects: [CostCenter],
+        transactions: [Transaction],
+        currencyCode: String
+    ) -> String {
+        let tokens = searchTokens(from: query)
+        guard !tokens.isEmpty else {
+            return "- No explicit non-transaction search terms detected."
+        }
+
+        struct EntityMatch {
+            let score: Int
+            let recency: Date
+            let line: String
+        }
+
+        var matches: [EntityMatch] = []
+
+        for family in families {
+            let haystack = [family.name].map { $0.normalizedForMatching() }.joined(separator: " ")
+            let score = entityScore(tokens: tokens, haystack: haystack)
+            if score > 0 {
+                matches.append(.init(
+                    score: score,
+                    recency: family.createdAt,
+                    line: "- family_match(score=\(score)) | name=\(family.name) | accounts=\(accounts.filter { $0.family?.id == family.id }.count) | goals=\(goals.filter { $0.family?.id == family.id }.count)"
+                ))
+            }
+        }
+
+        for account in accounts {
+            let haystack = ([account.name, account.type.label] + accountSearchAliases(for: account))
+                .map { $0.normalizedForMatching() }
+                .joined(separator: " ")
+            let score = entityScore(tokens: tokens, haystack: haystack)
+            if score > 0 {
+                matches.append(.init(
+                    score: score,
+                    recency: account.createdAt,
+                    line: "- account_match(score=\(score)) | name=\(account.name) | type=\(account.type.label)\(creditCardAccountContextBlock(for: account, transactions: transactions, currencyCode: currencyCode)) | link=finaince://account/\(account.id.uuidString)"
+                ))
+            }
+        }
+
+        for goal in goals {
+            let categoryName = goal.category?.displayName ?? ""
+            let haystack = [goal.title, categoryName]
+                .map { $0.normalizedForMatching() }
+                .joined(separator: " ")
+            let score = entityScore(tokens: tokens, haystack: haystack)
+            if score > 0 {
+                matches.append(.init(
+                    score: score,
+                    recency: goal.createdAt,
+                    line: "- goal_match(score=\(score)) | title=\(goal.title) | target=\(goal.targetAmount.asCurrency(currencyCode)) | category=\(goal.category?.displayName ?? "All spending") | link=finaince://goal/\(goal.id.uuidString)"
+                ))
+            }
+        }
+
+        for project in projects {
+            let haystack = [project.name, cleanedText(project.desc) ?? ""]
+                .map { $0.normalizedForMatching() }
+                .joined(separator: " ")
+            let score = entityScore(tokens: tokens, haystack: haystack)
+            if score > 0 {
+                matches.append(.init(
+                    score: score,
+                    recency: project.updatedAt,
+                    line: "- project_match(score=\(score)) | name=\(project.name) | spent=\(projectSpent(project, transactions: transactions).asCurrency(currencyCode)) | status=\(project.isActive ? "active" : "inactive") | link=finaince://project/\(project.id.uuidString)"
+                ))
+            }
+        }
+
+        guard !matches.isEmpty else {
+            return "- No direct account, family, goal, or project matches were found for the latest request."
+        }
+
+        return matches
+            .sorted {
+                if $0.score == $1.score { return $0.recency > $1.recency }
+                return $0.score > $1.score
+            }
+            .prefix(10)
+            .map(\.line)
+            .joined(separator: "\n")
+    }
+
+    private static func entityScore(tokens: [String], haystack: String) -> Int {
+        var score = 0
+        for token in tokens {
+            if token.count >= 4 && haystack.contains(token) {
+                score += 3
+            } else if token.count >= 3 && haystack.contains(token) {
+                score += 2
+            }
+        }
+        return score
     }
 
     // MARK: - Gemini
@@ -1579,20 +1899,37 @@ struct AIService {
     ) async throws -> ReceiptResult {
 
         let userLang = LanguageManager.shared.effective.rawValue
+        let sanitizedCategoryOptions = Array(
+            Dictionary(
+                uniqueKeysWithValues: categoryOptions.compactMap { option -> (String, ReceiptCategoryOption)? in
+                    guard
+                        let key = option.categorySystemKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+                        !key.isEmpty
+                    else {
+                        return nil
+                    }
+                    return (key, option)
+                }
+            ).values
+        )
 
-        let categoriesHint = categoryOptions.isEmpty
+        let categoriesHint = sanitizedCategoryOptions.isEmpty
             ? ""
-            : "\n\nAvailable categories (choose the best match):\n\(categoryOptions.map { "- category_key=\($0.categorySystemKey ?? "") | label=\($0.categoryDisplayName)" }.joined(separator: "\n"))"
+            : "\n\nAvailable categories (choose the best match):\n\(sanitizedCategoryOptions.map { "- category_key=\($0.categorySystemKey ?? "") | label=\($0.categoryDisplayName)" }.joined(separator: "\n"))"
 
         let system = """
         You are a financial receipt extractor for a personal finance app.
         The user's language is \(userLang).
 
-        YOUR ONLY JOB: determine if the text is a purchase receipt/invoice and, if so, extract structured data.
+        YOUR ONLY JOB: determine if the text is expense evidence or a payable expense document and, if so, extract structured data.
 
-        RECEIPT DETECTION RULES:
+        EXPENSE EVIDENCE RULES:
         - A receipt/invoice must have: a merchant/store name AND a total amount paid.
-        - Bank statements, screenshots, menus without totals, chat messages, photos without purchase context → NOT a receipt.
+        - A bank card authorization / hold / retention / payment notification is also valid purchase evidence IF it clearly contains a merchant/store name AND an amount.
+        - A tax notice, municipal bill, vehicle tax, or other official payable expense document is also valid expense evidence IF it clearly identifies the issuer/entity AND the payable amount.
+        - Examples of valid card-notification wording: card authorization, payment approved, retenção, retencion, tarjeta, cartão, compra aprovada, purchase notification.
+        - Examples of valid payable-document wording: impuesto, tasa, tributo, ayuntamiento, prefeitura, municipal, recibo de pago, documento de cobro.
+        - Bank statements, screenshots without entity+amount, menus without totals, chat messages, photos without expense context → NOT expense evidence.
         - If uncertain, set "is_receipt": false.
 
         AMOUNT RULES (critical):
@@ -1604,7 +1941,10 @@ struct AIService {
         - Use decimal dot (not comma): R$ 1.234,56 → 1234.56
 
         DATE RULES:
-        - Return purchase date in yyyy-MM-dd format.
+        - Return the best transaction-related date in yyyy-MM-dd format.
+        - Prefer explicit payment date, charge date, or due date over statement period start/end dates.
+        - For official tax/bill documents, do NOT use the statement period start date unless it is clearly the effective payment/charge date.
+        - If the document only shows a coverage period or reference year and no reliable transaction date, return empty string.
         - If only time is shown without date, return empty string.
         - Common formats: DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD — parse all correctly.
 
@@ -1636,15 +1976,15 @@ struct AIService {
         // The on-device model is very small (~3B). Use a minimal prompt so it
         // reliably returns valid JSON instead of ignoring complex instructions.
         if settings.provider == .local {
-            let catList = categoryOptions.isEmpty
+            let catList = sanitizedCategoryOptions.isEmpty
                 ? ""
-                : " Categories: \(categoryOptions.prefix(10).map { "\($0.categorySystemKey ?? "")" }.joined(separator: ", "))."
+                : " Categories: \(sanitizedCategoryOptions.prefix(12).compactMap { $0.categorySystemKey }.joined(separator: ", "))."
 
             let localPrompt = """
             Return ONLY valid JSON. No explanation.
-            Is this text a purchase receipt? If yes, extract total amount paid, store name, date.
+            Is this text expense evidence such as a receipt, invoice, card payment notification, tax notice, or payable official document? If yes, extract total amount paid, entity/store name, and the best transaction-related date.
             JSON format: {"is_receipt":true,"valor":0.0,"estabelecimento":"","categoria_key":"","data":"","observacao":""}
-            Rules: valor = final total paid (not subtotal, not tax alone). Use decimal dot (e.g. 42.50).\(catList)
+            Rules: valor = final total paid or payable amount (not subtotal, not tax component alone). Use decimal dot (e.g. 42.50). Avoid using statement period start/end dates when a better payment/charge/due date is not explicit.\(catList)
 
             TEXT:
             \(ocrText.prefix(800))
@@ -1654,7 +1994,10 @@ struct AIService {
                 transactions: [],
                 goals: [],
                 accounts: [],
+                projects: [],
+                families: [],
                 categories: [],
+                userProfile: .init(name: "", adultsCount: 0, childrenCount: 0),
                 currencyCode: CurrencyOption.defaultCode,
                 appLanguageCode: LanguageManager.shared.effective.rawValue,
                 localeIdentifier: Locale.current.identifier,
@@ -1765,7 +2108,11 @@ struct AIService {
         let storeName = normalizeMerchantDisplayName((json["estabelecimento"] as? String) ?? "") ?? ""
         let categorySystemKey = ((json["categoria_key"] as? String) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let matchedCategory = categoryOptions.first { $0.categorySystemKey == categorySystemKey }
+        let matchedCategory = sanitizedCategoryOptions.first { $0.categorySystemKey == categorySystemKey }
+            ?? sanitizedCategoryOptions.first {
+                guard let key = $0.categorySystemKey else { return false }
+                return categorySystemKey.hasPrefix(key + ".")
+            }
         let notes = (json["observacao"] as? String) ?? ""
         let dateString = (json["data"] as? String) ?? ""
         let date = CSVImportService.parseDate(dateString)
@@ -2062,7 +2409,19 @@ private extension AIService {
             return "- No explicit transaction search terms detected."
         }
 
-        let scored = transactions.compactMap { transaction -> (Transaction, Int)? in
+        let calendar = Calendar.current
+        let now = Date()
+        let baseTransactions: [Transaction]
+        if queryHasExplicitPeriod(query) {
+            baseTransactions = transactions
+        } else {
+            baseTransactions = transactions.filter {
+                calendar.component(.year, from: $0.date) == calendar.component(.year, from: now) &&
+                calendar.component(.month, from: $0.date) == calendar.component(.month, from: now)
+            }
+        }
+
+        let scored = baseTransactions.compactMap { transaction -> (Transaction, Int)? in
             let merchant = transaction.placeName ?? ""
             let category = transaction.category?.displayName ?? ""
             let subcategory = transaction.subcategory?.displayName ?? ""
@@ -2091,7 +2450,7 @@ private extension AIService {
             if $0.1 == $1.1 { return $0.0.date > $1.0.date }
             return $0.1 > $1.1
         }
-        .prefix(8)
+        .prefix(20)
 
         guard !scored.isEmpty else {
             return "- No direct transaction matches were found for the latest request."
@@ -2116,6 +2475,30 @@ private extension AIService {
             .filter { $0.count >= 3 }
             .map { $0.normalizedForMatching() }
             .filter { !$0.isEmpty }
+    }
+
+    static func queryHasExplicitPeriod(_ text: String) -> Bool {
+        let normalized = text.normalizedForMatching()
+        let explicitTerms = [
+            "january", "february", "march", "april", "may", "june", "july", "august",
+            "september", "october", "november", "december",
+            "janeiro", "fevereiro", "marco", "abril", "maio", "junho", "julho", "agosto",
+            "setembro", "outubro", "novembro", "dezembro",
+            "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+            "septiembre", "octubre", "noviembre", "diciembre",
+            "today", "yesterday", "tomorrow", "week", "month", "year",
+            "hoje", "ontem", "amanha", "semana", "mes", "ano",
+            "hoy", "ayer", "manana", "semana", "mes", "ano",
+            "lastmonth", "thismonth", "nextmonth", "pastmonth",
+            "mespassado", "estemes", "proximomes",
+            "mespasado", "estemes", "proximomes"
+        ]
+
+        if explicitTerms.contains(where: { normalized.contains($0) }) {
+            return true
+        }
+
+        return normalized.range(of: "\\b20\\d{2}\\b", options: .regularExpression) != nil
     }
 
     /// Returns a language-aware context block for merchant categorization prompts.

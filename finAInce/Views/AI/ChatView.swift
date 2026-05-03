@@ -19,8 +19,12 @@ struct ChatView: View {
     @Query private var accounts: [Account]
     @Query private var categories: [Category]
     @Query private var costCenters: [CostCenter]
+    @Query private var families: [Family]
     @Query private var aiSettings: [AISettings]
     @AppStorage("app.currencyCode") private var currencyCode = CurrencyOption.defaultCode
+    @AppStorage("user.name") private var userName = "Meu Perfil"
+    @AppStorage("user.adultsCount") private var adultsCount = 0
+    @AppStorage("user.childrenCount") private var childrenCount = 0
     @State private var chatNavigationManager = ChatNavigationManager.shared
     @State private var importManager = SharedImportManager.shared
 
@@ -35,8 +39,10 @@ struct ChatView: View {
     @State private var reviewState: IdentifiableNewTransactionState? = nil
     @State private var pendingDeepAnalysisOffer: DeepAnalysisOfferPayload? = nil
     @State private var pendingDeepAnalysisPrompt: DeepAnalysisSharePayload? = nil
+    @State private var pendingImportStatementOffer: ImportStatementOfferPayload? = nil
     @State private var pendingDeepAnalysisOfferMessageId: UUID? = nil
     @State private var pendingDeepAnalysisPromptMessageId: UUID? = nil
+    @State private var pendingImportStatementOfferMessageId: UUID? = nil
     @State private var createdTransactionByMessageId: [UUID: Transaction] = [:]
     @State private var lastCreatedMessageId: UUID? = nil
     @State private var transactionToView: Transaction? = nil
@@ -45,6 +51,12 @@ struct ChatView: View {
     @State private var deepAnalysisOfferShown = false
     @State private var deepAnalysisSharePayload: DeepAnalysisSharePayload? = nil
     @State private var isPreparingDeepAnalysis = false
+    @State private var dailyInsight: DailyInsight?
+    @State private var isDailyInsightLoading = false
+    @State private var dailyInsightLoadToken = UUID()
+    @State private var savingsOpportunities: [SavingsOpportunity] = []
+    @State private var isSavingsOpportunitiesLoading = false
+    @State private var savingsOpportunityLoadToken = UUID()
     private let regularContentMaxWidth: CGFloat = 1100
 
     // ── Attachment state ────────────────────────────────────────────────────
@@ -90,6 +102,86 @@ struct ChatView: View {
         ]
     }
 
+    private struct AnalysisHubItem: Identifiable {
+        let id: String
+        let icon: String
+        let color: Color
+        let title: String
+        let subtitle: String
+        let prompt: String
+        let deepFocus: String
+    }
+
+    private var analysisHubItems: [AnalysisHubItem] {
+        [
+            AnalysisHubItem(
+                id: "month",
+                icon: "calendar.badge.clock",
+                color: .blue,
+                title: t("ai.hub.monthTitle"),
+                subtitle: t("ai.hub.monthSubtitle"),
+                prompt: t("ai.hub.monthPrompt"),
+                deepFocus: t("ai.hub.monthTitle")
+            ),
+            AnalysisHubItem(
+                id: "card",
+                icon: "creditcard.fill",
+                color: .orange,
+                title: t("ai.hub.cardTitle"),
+                subtitle: t("ai.hub.cardSubtitle"),
+                prompt: t("ai.hub.cardPrompt"),
+                deepFocus: t("ai.hub.cardTitle")
+            ),
+            AnalysisHubItem(
+                id: "excess",
+                icon: "exclamationmark.triangle.fill",
+                color: .red,
+                title: t("ai.hub.excessTitle"),
+                subtitle: t("ai.hub.excessSubtitle"),
+                prompt: t("ai.hub.excessPrompt"),
+                deepFocus: t("ai.hub.excessTitle")
+            ),
+            AnalysisHubItem(
+                id: "payments",
+                icon: "bell.badge.fill",
+                color: .yellow,
+                title: t("ai.hub.paymentsTitle"),
+                subtitle: t("ai.hub.paymentsSubtitle"),
+                prompt: t("ai.hub.paymentsPrompt"),
+                deepFocus: t("ai.hub.paymentsTitle")
+            ),
+            AnalysisHubItem(
+                id: "goals",
+                icon: "target",
+                color: .green,
+                title: t("ai.hub.goalsTitle"),
+                subtitle: t("ai.hub.goalsSubtitle"),
+                prompt: t("ai.hub.goalsPrompt"),
+                deepFocus: t("ai.hub.goalsTitle")
+            ),
+            AnalysisHubItem(
+                id: "education",
+                icon: "book.fill",
+                color: .purple,
+                title: t("ai.hub.educationTitle"),
+                subtitle: t("ai.hub.educationSubtitle"),
+                prompt: t("ai.hub.educationPrompt"),
+                deepFocus: t("ai.hub.educationTitle")
+            )
+        ]
+    }
+
+    private var activeProviderLabel: String {
+        activeSettings?.provider.label ?? t("ai.notConfigured")
+    }
+
+    private var dailyInsightReloadKey: String {
+        let latestTransaction = transactions.first?.id.uuidString ?? "none"
+        let latestGoal = goals.first?.id.uuidString ?? "none"
+        let latestAccount = accounts.first?.id.uuidString ?? "none"
+        return "\(transactions.count)-\(goals.count)-\(accounts.count)-\(currencyCode)-\(latestTransaction)-\(latestGoal)-\(latestAccount)"
+    }
+
     private struct QuickReplyAction: Identifiable {
         enum Kind {
             case sendText(String)
@@ -109,6 +201,7 @@ struct ChatView: View {
         guard pendingDraft == nil,
               pendingDeepAnalysisOffer == nil,
               pendingDeepAnalysisPrompt == nil,
+              pendingImportStatementOffer == nil,
               !isLoading else {
             return []
         }
@@ -238,11 +331,20 @@ struct ChatView: View {
             // Arquivo CSV / texto
             .fileImporter(
                 isPresented: $showCSVPicker,
-                allowedContentTypes: [.commaSeparatedText, .text, .plainText],
+                allowedContentTypes: ([
+                    .commaSeparatedText,
+                    .tabSeparatedText,
+                    .plainText,
+                    .text,
+                    UTType("org.openxmlformats.spreadsheetml.sheet"),
+                    UTType("com.microsoft.excel.xls"),
+                    UTType(filenameExtension: "ofx"),
+                    UTType("com.intuit.ofx"),
+                ] as [UTType?]).compactMap { $0 },
                 allowsMultipleSelection: false
             ) { result in
                 if case .success(let urls) = result, let url = urls.first {
-                    loadCSV(from: url)
+                    _ = handleStatementFileSelection(url)
                 }
             }
         }
@@ -294,9 +396,7 @@ struct ChatView: View {
         }
 
         if let sharedFile = importManager.pendingSharedChatFile {
-            if loadSharedDataFile(from: sharedFile.url) {
-                consumedAttachment = true
-            }
+            _ = handleStatementFileSelection(sharedFile.url)
             importManager.clearPendingSharedChatFile()
         }
 
@@ -329,7 +429,7 @@ struct ChatView: View {
     }
 
     private func compactChatHeader(topInset: CGFloat) -> some View {
-        HStack(alignment: .center, spacing: 14) {
+        HStack(alignment: .top, spacing: 14) {
             chatHeaderLeadingContent
 
             Spacer()
@@ -371,7 +471,7 @@ struct ChatView: View {
     }
 
     private var chatHeaderLeadingContent: some View {
-        HStack(alignment: .center, spacing: 14) {
+        HStack(alignment: .top, spacing: 14) {
             Image("Avatar")
                 .resizable()
                 .scaledToFill()
@@ -392,23 +492,12 @@ struct ChatView: View {
                     .foregroundStyle(.white))
                 .font(.system(size: 30, weight: .bold, design: .rounded))
 
-                if isConfigured, let s = activeSettings {
-                    Button { showAISettings = true } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: s.provider.iconName)
-                                .font(.caption2.weight(.semibold))
-                            Text(s.provider.modelDisplayName(s.model))
-                                .font(.caption.weight(.semibold))
-                                .lineLimit(1)
-                        }
-                        .foregroundStyle(.white.opacity(0.95))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(chatGlassFill)
-                        .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                } else {
+                Text(t("ai.emptyTitle"))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if !isConfigured {
                     Text(t("ai.smartAssistant"))
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.80))
@@ -421,15 +510,35 @@ struct ChatView: View {
     private var chatHeaderTrailingAction: some View {
         Group {
             if isConfigured {
-                Button { clearChat() } label: {
-                    Image(systemName: "square.and.pencil")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.95))
-                        .frame(width: 42, height: 42)
-                        .background(chatGlassStrongFill)
-                        .clipShape(Circle())
+                HStack(spacing: 10) {
+                    if let s = activeSettings {
+                        Button { showAISettings = true } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: s.provider.iconName)
+                                    .font(.caption2.weight(.semibold))
+                                Text(s.provider.modelDisplayName(s.model))
+                                    .font(.caption.weight(.semibold))
+                                    .lineLimit(1)
+                            }
+                            .foregroundStyle(.white.opacity(0.95))
+                            .padding(.horizontal, 10)
+                            .frame(height: 42)
+                            .background(chatGlassFill)
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    Button { clearChat() } label: {
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.95))
+                            .frame(width: 42, height: 42)
+                            .background(chatGlassStrongFill)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             } else {
                 Button { showSetup = true } label: {
                     Text(t("common.configure"))
@@ -709,22 +818,42 @@ struct ChatView: View {
     private var suggestionsView: some View {
         ScrollView {
             VStack(spacing: 20) {
-                Spacer(minLength: 32)
-                Image(systemName: "sparkles")
-                    .font(.system(size: 48))
-                    .foregroundStyle(FinAInceColor.secondaryText)
-                VStack(spacing: 6) {
-                    Text(t("ai.emptyTitle"))
-                        .font(.headline)
-                        .foregroundStyle(FinAInceColor.primaryText)
-                        .multilineTextAlignment(.center)
-                    Text(t("ai.emptyDesc"))
-                        .font(.subheadline)
-                        .foregroundStyle(FinAInceColor.secondaryText)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+
+                if isDailyInsightLoading {
+                    dailyInsightSkeletonCard
+                        .padding(.horizontal)
+                } else if let dailyInsight {
+                    dailyInsightCard(dailyInsight)
+                        .padding(.horizontal)
                 }
-                .frame(maxWidth: .infinity, alignment: .center)
+
+                if isSavingsOpportunitiesLoading || !savingsOpportunities.isEmpty || !transactions.isEmpty {
+                    savingsOpportunitySection
+                        .padding(.horizontal)
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(t("ai.hub.sectionTitle"))
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(FinAInceColor.primaryText)
+
+                        Text(t("ai.hub.sectionSubtitle"))
+                            .font(.caption)
+                            .foregroundStyle(FinAInceColor.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 12) {
+                            ForEach(analysisHubItems) { item in
+                                analysisHubCard(item)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
                 .padding(.horizontal)
 
                 // Chips de atalho para anexos
@@ -734,27 +863,373 @@ struct ChatView: View {
                 }
                 .padding(.horizontal)
 
-                VStack(spacing: 8) {
-                    ForEach(suggestedQuestions, id: \.self) { question in
-                        Button {
-                            inputText = question
-                            sendMessage()
-                        } label: {
-                            Text(question)
-                                .font(.subheadline)
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(12)
-                                .background(FinAInceColor.secondarySurface)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                        }
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(t("ai.hub.quickQuestionsTitle"))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(FinAInceColor.primaryText)
+
+                    VStack(spacing: 8) {
+                        ForEach(suggestedQuestions, id: \.self) { question in
+                            Button {
+                                inputText = question
+                                sendMessage()
+                            } label: {
+                                Text(question)
+                                    .font(.subheadline)
+                                    .multilineTextAlignment(.leading)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(12)
+                                    .background(FinAInceColor.secondarySurface)
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                            }
+                            .foregroundStyle(FinAInceColor.primaryText)
+                        }
                     }
                 }
                 .padding(.horizontal)
             }
+            .padding(.bottom, 24)
+        }
+        .task(id: dailyInsightReloadKey) {
+            scheduleDailyInsightLoad()
+            scheduleSavingsOpportunitiesLoad()
         }
     }
+
+    private var dailyInsightSkeletonCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.12))
+                    .frame(width: 40, height: 40)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(t("ai.dailyInsightTitle"))
+                        .font(.caption2.bold())
+                        .foregroundStyle(Color.accentColor)
+                        .textCase(.uppercase)
+                        .tracking(0.5)
+
+                    Text(t("dashboard.insightsLoadingTitle"))
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(FinAInceColor.primaryText)
+                }
+            }
+
+            Text(t("dashboard.dailyInsightLoadingSubtitle"))
+                .font(.subheadline)
+                .foregroundStyle(FinAInceColor.secondaryText)
+
+            Text(t("dashboard.dailyInsightLoadingAction"))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(FinAInceColor.secondarySurface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(FinAInceColor.borderSubtle, lineWidth: 1)
+        )
+    }
+
+    private func dailyInsightCard(_ dailyInsight: DailyInsight) -> some View {
+        chatSignalCard(
+            icon: dailyInsight.icon,
+            color: dailyInsight.color,
+            badgeTitle: t("ai.signal.insightBadge"),
+            title: dailyInsight.title,
+            body: dailyInsight.explanation,
+            detail: dailyInsight.action,
+            detailColor: dailyInsight.color,
+            ctaTitle: t("ai.dailyInsightCTA")
+        ) {
+            triggerDailyInsightConversation(dailyInsight)
+        }
+    }
+
+    private func savingsOpportunityCard(_ opportunity: SavingsOpportunity) -> some View {
+        chatSignalCard(
+            icon: opportunity.icon,
+            color: opportunity.color,
+            badgeTitle: t("ai.signal.opportunityBadge"),
+            title: opportunity.title,
+            body: nil,
+            detail: opportunity.action,
+            detailColor: FinAInceColor.secondaryText,
+            ctaTitle: t("ai.opportunities.cta")
+        ) {
+            triggerSavingsOpportunityConversation(opportunity)
+        }
+    }
+
+    private func chatSignalCard(
+        icon: String,
+        color: Color,
+        badgeTitle: String,
+        title: String,
+        body: String?,
+        detail: String,
+        detailColor: Color,
+        ctaTitle: String,
+        onTap: @escaping () -> Void
+    ) -> some View {
+        Button {
+            onTap()
+        } label: {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    ZStack {
+                        Circle()
+                            .fill(color.opacity(0.12))
+                            .frame(width: 40, height: 40)
+
+                        Image(systemName: icon)
+                            .font(.subheadline.bold())
+                            .foregroundStyle(color)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(badgeTitle)
+                            .font(.caption2.bold())
+                            .foregroundStyle(color)
+                            .textCase(.uppercase)
+                            .tracking(0.5)
+
+                        Text(title)
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(FinAInceColor.primaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "sparkles")
+                        .font(.caption.bold())
+                        .foregroundStyle(color)
+                }
+
+                if let body, !body.isEmpty {
+                    Text(body)
+                        .font(.subheadline)
+                        .foregroundStyle(FinAInceColor.primaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(detailColor)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.up.right.circle.fill")
+                        .font(.caption.bold())
+                    Text(ctaTitle)
+                        .font(.caption.bold())
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(color)
+                .clipShape(Capsule())
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                LinearGradient(
+                    colors: [
+                        color.opacity(0.16),
+                        color.opacity(0.07),
+                        FinAInceColor.secondarySurface
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(color.opacity(0.24), lineWidth: 1)
+            )
+            .shadow(color: color.opacity(0.10), radius: 12, x: 0, y: 6)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var savingsOpportunitySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(t("ai.opportunities.sectionTitle"))
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(FinAInceColor.primaryText)
+
+                Text(t("ai.opportunities.sectionSubtitle"))
+                    .font(.caption)
+                    .foregroundStyle(FinAInceColor.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if isSavingsOpportunitiesLoading {
+                savingsOpportunitySkeletonCard
+            } else if savingsOpportunities.isEmpty {
+                savingsOpportunityEmptyStateCard
+            } else {
+                VStack(spacing: 10) {
+                    ForEach(savingsOpportunities) { opportunity in
+                        savingsOpportunityCard(opportunity)
+                    }
+                }
+            }
+        }
+    }
+
+    private var savingsOpportunitySkeletonCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.green.opacity(0.12))
+                    .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(t("ai.opportunities.loadingTitle"))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(FinAInceColor.primaryText)
+                    Text(t("ai.opportunities.loadingSubtitle"))
+                        .font(.caption)
+                        .foregroundStyle(FinAInceColor.secondaryText)
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color.green.opacity(0.10),
+                    FinAInceColor.secondarySurface
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.green.opacity(0.16), lineWidth: 1)
+        )
+    }
+
+    private var savingsOpportunityEmptyStateCard: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.green.opacity(0.10))
+                    .frame(width: 42, height: 42)
+
+                Image(systemName: "leaf.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color.green)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(t("ai.opportunities.emptyTitle"))
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(FinAInceColor.primaryText)
+
+                Text(t("ai.opportunities.emptySubtitle"))
+                    .font(.caption)
+                    .foregroundStyle(FinAInceColor.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color.green.opacity(0.08),
+                    FinAInceColor.secondarySurface
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.green.opacity(0.14), lineWidth: 1)
+        )
+    }
+
+    private func analysisHubCard(_ item: AnalysisHubItem) -> some View {
+        Button {
+            triggerAnalysisHubConversation(item)
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(item.color.opacity(0.16))
+                            .frame(width: 42, height: 42)
+
+                        Image(systemName: item.icon)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(item.color)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "arrow.up.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(FinAInceColor.secondaryText)
+                }
+
+                Spacer(minLength: 0)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(FinAInceColor.primaryText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(minHeight: 40, alignment: .topLeading)
+                        .layoutPriority(1)
+
+                    Text(item.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(FinAInceColor.secondaryText)
+                        .lineLimit(1)
+                        .multilineTextAlignment(.leading)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(14)
+            .frame(width: isRegularLayout ? 168 : 150, height: isRegularLayout ? 168 : 150, alignment: .topLeading)
+            .background(
+                LinearGradient(
+                    colors: [
+                        item.color.opacity(0.14),
+                        FinAInceColor.secondarySurface
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 18)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .stroke(item.color.opacity(0.18), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
 
     private var chatScrollView: some View {
         ScrollViewReader { proxy in
@@ -794,6 +1269,16 @@ struct ChatView: View {
                                 onShare: { deepAnalysisSharePayload = payload }
                             )
                             .id("pending-deep-analysis-prompt")
+                        }
+
+                        if pendingImportStatementOfferMessageId == message.id,
+                           let payload = pendingImportStatementOffer {
+                            ImportStatementOfferBubble(
+                                payload: payload,
+                                onImport: { startStatementImport(from: payload.fileURL) },
+                                onCancel: { dismissStatementImportOffer() }
+                            )
+                            .id("pending-import-statement-offer")
                         }
 
                         if messages.last?.id == message.id, !quickReplyActions.isEmpty {
@@ -969,12 +1454,12 @@ struct ChatView: View {
         return Array(actions.prefix(3))
     }
 
-    private func sendMessage() {
+    private func sendMessage(displayTextOverride: String? = nil, aiContentOverride: String? = nil) {
         let text = inputText.trimmingCharacters(in: .whitespaces)
         guard canSend, let settings = activeSettings else { return }
 
         // ── Build the display text (shown in the bubble) ───────────────────
-        var displayContent = text
+        var displayContent = displayTextOverride ?? text
         if attachedImage != nil {
             displayContent = text.isEmpty ? "📷 Imagem" : "📷  \(text)"
         } else if let name = attachedCSVName {
@@ -1009,7 +1494,7 @@ struct ChatView: View {
 
         Task {
             // ── Build enriched content for the AI ──────────────────────────
-            var aiContent = text
+            var aiContent = aiContentOverride ?? text
             var imageDataForAI: Data? = nil
 
             if let image = capturedImage {
@@ -1017,7 +1502,7 @@ struct ChatView: View {
                 await MainActor.run { sessionImages[userMessage.id] = image }
 
                 // Always try OCR receipt detection first — fast, local, free
-                let ocrText = await recognizeText(in: image)
+                let ocrText = await ReceiptDraftExtractionService.recognizeText(in: image)
                 print("🔍 [OCR · Vision/Apple] chars=\(ocrText.count) preview=\(ocrText.prefix(120).replacingOccurrences(of: "\n", with: "↵"))")
 
                 if !ocrText.isEmpty, let draft = await extractReceiptDraft(
@@ -1028,7 +1513,10 @@ struct ChatView: View {
                 ) {
                     // Receipt confirmed — show draft card without calling AI
                     print("✅ [Receipt · \(settings.provider.label)] CONFIRMED → amount=\(draft.amount) store=\(draft.placeName ?? "-") category=\(draft.categoryName ?? "-") date=\(draft.date.map { "\($0)" } ?? "nil")")
-                    await MainActor.run { pendingDraft = draft; isLoading = false }
+                    await MainActor.run {
+                        pendingDraft = draft
+                        isLoading = false
+                    }
                     return
                 }
 
@@ -1075,13 +1563,19 @@ struct ChatView: View {
                     accounts:     Array(accounts),
                     categories:   Array(categories),
                     projects:     Array(costCenters),
+                    families:     Array(families),
+                    userProfile:   .init(
+                        name: userName,
+                        adultsCount: adultsCount,
+                        childrenCount: childrenCount
+                    ),
                     currencyCode: currencyCode,
                     imageData:    imageDataForAI
                 )
                 await MainActor.run {
                     messages.append(ChatMessage(role: .assistant, content: result.content))
                     if let draft = result.transactionDraft {
-                        pendingDraft = draft
+                        pendingDraft = normalizedDraft(draft)
                     }
                     maybeOfferDeepAnalysis()
                     isLoading = false
@@ -1096,6 +1590,114 @@ struct ChatView: View {
                     isLoading = false
                 }
             }
+        }
+    }
+
+    private func triggerDailyInsightConversation(_ dailyInsight: DailyInsight) {
+        guard isConfigured else {
+            showAISettings = true
+            return
+        }
+
+        activeDeepAnalysisFocus = dailyInsight.title
+        activeShouldOfferDeepAnalysis = true
+        let userFacingText = t("ai.dailyInsightUserMessage", dailyInsight.title)
+        inputText = userFacingText
+        sendMessage(
+            displayTextOverride: userFacingText,
+            aiContentOverride: dailyInsight.chatPrompt
+        )
+    }
+
+    private func triggerAnalysisHubConversation(_ item: AnalysisHubItem) {
+        guard isConfigured else {
+            showAISettings = true
+            return
+        }
+
+        activeDeepAnalysisFocus = item.deepFocus
+        activeShouldOfferDeepAnalysis = true
+        inputText = item.prompt
+        sendMessage()
+    }
+
+    private func triggerSavingsOpportunityConversation(_ opportunity: SavingsOpportunity) {
+        guard isConfigured else {
+            showAISettings = true
+            return
+        }
+
+        activeDeepAnalysisFocus = opportunity.title
+        activeShouldOfferDeepAnalysis = true
+        let userFacingText = t("ai.opportunities.userMessage", opportunity.categoryName)
+        inputText = userFacingText
+        sendMessage(
+            displayTextOverride: userFacingText,
+            aiContentOverride: opportunity.chatPrompt
+        )
+    }
+
+    @MainActor
+    private func scheduleDailyInsightLoad() {
+        let token = UUID()
+        dailyInsightLoadToken = token
+        isDailyInsightLoading = true
+        dailyInsight = nil
+
+        let scopedTransactions = Array(transactions)
+        let scopedAccounts = Array(accounts)
+        let scopedGoals = Array(goals)
+        let scopedCurrencyCode = currencyCode
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            guard token == dailyInsightLoadToken else { return }
+
+            let now = Date()
+            let month = Calendar.current.component(.month, from: now)
+            let year = Calendar.current.component(.year, from: now)
+            let insight = InsightEngine.computeDailyInsight(
+                transactions: scopedTransactions,
+                accounts: scopedAccounts,
+                goals: scopedGoals,
+                month: month,
+                year: year,
+                currencyCode: scopedCurrencyCode
+            )
+
+            guard token == dailyInsightLoadToken else { return }
+            dailyInsight = insight
+            isDailyInsightLoading = false
+        }
+    }
+
+    @MainActor
+    private func scheduleSavingsOpportunitiesLoad() {
+        let token = UUID()
+        savingsOpportunityLoadToken = token
+        isSavingsOpportunitiesLoading = true
+        savingsOpportunities = []
+
+        let scopedTransactions = Array(transactions)
+        let scopedCurrencyCode = currencyCode
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
+            guard token == savingsOpportunityLoadToken else { return }
+
+            let now = Date()
+            let month = Calendar.current.component(.month, from: now)
+            let year = Calendar.current.component(.year, from: now)
+            let opportunities = SavingsOpportunityService.computeOpportunities(
+                transactions: scopedTransactions,
+                month: month,
+                year: year,
+                currencyCode: scopedCurrencyCode,
+                maximumCount: 2,
+                now: now
+            )
+
+            guard token == savingsOpportunityLoadToken else { return }
+            savingsOpportunities = opportunities
+            isSavingsOpportunitiesLoading = false
         }
     }
 
@@ -1195,8 +1797,10 @@ struct ChatView: View {
         pendingDraft = nil
         pendingDeepAnalysisOffer = nil
         pendingDeepAnalysisPrompt = nil
+        pendingImportStatementOffer = nil
         pendingDeepAnalysisOfferMessageId = nil
         pendingDeepAnalysisPromptMessageId = nil
+        pendingImportStatementOfferMessageId = nil
         createdTransactionByMessageId = [:]
         lastCreatedMessageId = nil
         transactionToView = nil
@@ -1365,50 +1969,13 @@ struct ChatView: View {
         fallbackText: String,
         receiptImageData: Data?
     ) async -> TransactionDraft? {
-        let categoryOptions = categories
-            .filter { $0.parent == nil }
-            .map {
-                AIService.ReceiptCategoryOption(
-                    categorySystemKey: $0.systemKey,
-                    categoryName: $0.name,
-                    categoryDisplayName: $0.displayName
-                )
-            }
-        let receiptResult = try? await AIService.analyzeReceipt(
-            ocrText: ocrText,
-            settings: settings,
-            categoryOptions: categoryOptions
-        )
-        print("🤖 [ReceiptAI · \(settings.provider.label)/\(settings.model)] is_receipt=\(receiptResult?.isReceipt ?? false) amount=\(receiptResult?.amount ?? 0) store=\(receiptResult?.storeName ?? "-") category=\(receiptResult?.suggestedCategorySystemKey ?? "-") date=\(receiptResult?.date.map { "\($0)" } ?? "nil") notes=\(receiptResult?.notes.prefix(60) ?? "-")")
-
-        guard let receipt = receiptResult, receipt.isReceipt, receipt.amount > 0 else {
-            if let r = receiptResult {
-                print("⛔ [ReceiptAI] Rejected — is_receipt=\(r.isReceipt) amount=\(r.amount)")
-            } else {
-                print("⛔ [ReceiptAI] analyzeReceipt threw or returned nil")
-            }
-            return nil
-        }
-
-        let categoryName = receipt.suggestedCategoryName.isEmpty
-            ? "Comércio"
-            : receipt.suggestedCategoryName
-        let notes = receipt.notes.isEmpty ? fallbackText : receipt.notes
-
-        // Resolve the default account so it shows in the draft card
         let allAccounts = (try? modelContext.fetch(FetchDescriptor<Account>())) ?? []
-        let defaultAccount = allAccounts.first(where: \.isDefault) ?? allAccounts.first
-        let resolvedAccountName = defaultAccount?.name ?? ""
-
-        return TransactionDraft(
-            amount: receipt.amount,
-            typeRaw: TransactionType.expense.rawValue,
-            categorySystemKey: receipt.suggestedCategorySystemKey,
-            categoryName: categoryName,
-            placeName: receipt.storeName,
-            notes: notes,
-            date: receipt.date,
-            accountName: resolvedAccountName,
+        return await ReceiptDraftExtractionService.extractDraft(
+            from: ocrText,
+            settings: settings,
+            categories: Array(categories),
+            accounts: allAccounts,
+            fallbackText: fallbackText,
             receiptImageData: receiptImageData
         )
     }
@@ -1417,7 +1984,7 @@ struct ChatView: View {
 
     private func reviewPendingDraft() {
         guard let draft = pendingDraft else { return }
-        reviewState = IdentifiableNewTransactionState(state: buildNewTransactionState(from: draft))
+        reviewState = IdentifiableNewTransactionState(state: buildNewTransactionState(from: normalizedDraft(draft)))
     }
 
     private func buildNewTransactionState(from draft: TransactionDraft) -> NewTransactionState {
@@ -1429,20 +1996,10 @@ struct ChatView: View {
         state.date      = draft.date ?? Date()
 
         // Resolve category
-        let allCategories = (try? modelContext.fetch(FetchDescriptor<Category>())) ?? []
-        state.category = allCategories.first { $0.systemKey == draft.categorySystemKey }
-            ?? allCategories.first { $0.name.localizedCaseInsensitiveCompare(draft.categoryName) == .orderedSame }
-            ?? allCategories.first { $0.name.localizedCaseInsensitiveContains(draft.categoryName) }
+        state.category = resolvedCategory(for: draft)
 
         // Resolve account
-        let allAccounts = (try? modelContext.fetch(FetchDescriptor<Account>())) ?? []
-        if draft.accountName.isEmpty {
-            state.account = allAccounts.first(where: \.isDefault) ?? allAccounts.first
-        } else {
-            state.account = allAccounts.first { $0.name.localizedCaseInsensitiveCompare(draft.accountName) == .orderedSame }
-                ?? allAccounts.first { $0.name.localizedCaseInsensitiveContains(draft.accountName) }
-                ?? allAccounts.first(where: \.isDefault) ?? allAccounts.first
-        }
+        state.account = resolvedAccount(for: draft)
 
         // Attach receipt image if available
         if let data = draft.receiptImageData,
@@ -1500,41 +2057,26 @@ struct ChatView: View {
     }
 
     private func confirmTransaction(_ draft: TransactionDraft) -> Transaction {
+        let normalized = normalizedDraft(draft)
+
         // ── Resolve category ──────────────────────────────────────────────
-        let allCategories = (try? modelContext.fetch(FetchDescriptor<Category>())) ?? []
-        let category = allCategories.first {
-            $0.systemKey == draft.categorySystemKey
-        } ?? allCategories.first {
-            $0.name.localizedCaseInsensitiveCompare(draft.categoryName) == .orderedSame
-        } ?? allCategories.first {
-            $0.name.localizedCaseInsensitiveContains(draft.categoryName)
-        }
+        let category = resolvedCategory(for: normalized)
 
         // ── Resolve account (by name from draft, fallback to default) ─────
-        let allAccounts = (try? modelContext.fetch(FetchDescriptor<Account>())) ?? []
-        let account: Account?
-        if draft.accountName.isEmpty {
-            account = allAccounts.first(where: \.isDefault) ?? allAccounts.first
-        } else {
-            account = allAccounts.first {
-                $0.name.localizedCaseInsensitiveCompare(draft.accountName) == .orderedSame
-            } ?? allAccounts.first {
-                $0.name.localizedCaseInsensitiveContains(draft.accountName)
-            } ?? allAccounts.first(where: \.isDefault) ?? allAccounts.first
-        }
+        let account = resolvedAccount(for: normalized)
 
         // ── Create transaction ────────────────────────────────────────────
         let tx = Transaction(
             type:      .expense,
-            amount:    draft.amount,
-            date:      draft.date ?? Date(),
-            placeName: draft.placeName.isEmpty ? nil : draft.placeName,
-            notes:     draft.notes.isEmpty     ? nil : draft.notes
+            amount:    normalized.amount,
+            date:      normalized.date ?? Date(),
+            placeName: normalized.placeName.isEmpty ? nil : normalized.placeName,
+            notes:     normalized.notes.isEmpty     ? nil : normalized.notes
         )
         tx.category = category
         tx.account  = account
         modelContext.insert(tx)
-        if let data = draft.receiptImageData,
+        if let data = normalized.receiptImageData,
            let image = UIImage(data: data) {
             _ = try? ReceiptAttachmentStore.addImage(image, to: tx, in: modelContext)
         }
@@ -1542,109 +2084,64 @@ struct ChatView: View {
         return tx
     }
 
+    private func normalizedDraft(_ draft: TransactionDraft) -> TransactionDraft {
+        let allCategories = Array(categories)
+        let allAccounts = (try? modelContext.fetch(FetchDescriptor<Account>())) ?? []
+        return TransactionDraftResolutionService.normalizeDraft(
+            draft,
+            categories: allCategories,
+            accounts: allAccounts
+        )
+    }
+
+    private func resolvedCategory(for draft: TransactionDraft) -> Category? {
+        TransactionDraftResolutionService.resolvedCategory(for: draft, in: Array(categories))
+    }
+
+    private func resolvedAccount(for draft: TransactionDraft) -> Account? {
+        let allAccounts = (try? modelContext.fetch(FetchDescriptor<Account>())) ?? []
+        return TransactionDraftResolutionService.resolvedAccount(for: draft, in: allAccounts)
+    }
+
     // MARK: - OCR Helper
 
-    private func recognizeText(in image: UIImage) async -> String {
-        let start = Date()
-        return await withCheckedContinuation { continuation in
-            guard let cgImage = image.cgImage else {
-                print("🔍 [OCR · Vision/Apple] No cgImage — skipping")
-                continuation.resume(returning: "")
-                return
-            }
-            let request = VNRecognizeTextRequest { req, _ in
-                let text = (req.results as? [VNRecognizedTextObservation] ?? [])
-                    .compactMap { $0.topCandidates(1).first?.string }
-                    .joined(separator: "\n")
-                let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
-                print("🔍 [OCR · Vision/Apple] Done in \(elapsed) — \(text.isEmpty ? "NO TEXT FOUND" : "\(text.count) chars")")
-                continuation.resume(returning: text)
-            }
-            request.recognitionLevel       = .accurate
-            request.recognitionLanguages   = LanguageManager.shared.effective.visionRecognitionLanguages
-            request.usesLanguageCorrection = true
-            try? VNImageRequestHandler(cgImage: cgImage, options: [:]).perform([request])
-        }
-    }
-
-    // MARK: - CSV Loader
-
-    private func loadCSV(from url: URL) {
-        _ = loadSharedDataFile(from: url)
-    }
+    // MARK: - Statement Import Routing
 
     @discardableResult
-    private func loadSharedDataFile(from url: URL) -> Bool {
-        let didStartAccessing = url.startAccessingSecurityScopedResource()
-        defer {
-            if didStartAccessing {
-                url.stopAccessingSecurityScopedResource()
-            }
-        }
+    private func handleStatementFileSelection(_ url: URL) -> Bool {
+        guard isStatementImportCandidate(url) else { return false }
 
-        let pathExtension = url.pathExtension.lowercased()
-        if ["xlsx", "xls"].contains(pathExtension) {
-            guard let data = try? Data(contentsOf: url) else { return false }
+        attachedCSVName = nil
+        attachedCSVContent = nil
 
-            let rows: [[String]]
-            do {
-                if pathExtension == "xls" {
-                    rows = try LegacyXLSReader.rows(from: data)
-                } else {
-                    rows = try XLSXReader.rows(from: data)
-                }
-            } catch {
-                return false
-            }
-
-            guard !rows.isEmpty else { return false }
-
-            attachedCSVName = url.lastPathComponent
-            attachedCSVContent = spreadsheetPreview(from: rows)
-            return true
-        }
-
-        let raw: String
-        if let utf8 = try? String(contentsOf: url, encoding: .utf8) {
-            raw = utf8
-        } else if let latin1 = try? String(contentsOf: url, encoding: .isoLatin1) {
-            raw = latin1
-        } else {
-            return false
-        }
-
-        let lines = raw.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-
-        // Keep header + up to 50 data rows so the prompt stays manageable
-        let preview = lines.prefix(51)
-        var content = preview.joined(separator: "\n")
-        if lines.count > 51 {
-            content += "\n… e mais \(lines.count - 51) linhas omitidas."
-        }
-
-        attachedCSVName    = url.lastPathComponent
-        attachedCSVContent = content
+        let assistantMessage = ChatMessage(
+            role: .assistant,
+            content: t("chat.importStatement.receivedMessage", url.lastPathComponent)
+        )
+        messages.append(assistantMessage)
+        pendingImportStatementOffer = ImportStatementOfferPayload(
+            title: t("chat.importStatement.offerTitle"),
+            subtitle: t("chat.importStatement.offerSubtitle", url.lastPathComponent),
+            fileURL: url
+        )
+        pendingImportStatementOfferMessageId = assistantMessage.id
         return true
     }
 
-    private func spreadsheetPreview(from rows: [[String]]) -> String {
-        let preview = rows.prefix(51)
-            .map { row in
-                row.map { cell in
-                    cell.replacingOccurrences(of: "\n", with: " ")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-                .joined(separator: "\t")
-            }
-            .joined(separator: "\n")
+    private func startStatementImport(from url: URL) {
+        importManager.pendingFile = SharedImportFile(url: url)
+        pendingImportStatementOffer = nil
+        pendingImportStatementOfferMessageId = nil
+    }
 
-        if rows.count > 51 {
-            return preview + "\n… e mais \(rows.count - 51) linhas omitidas."
-        }
+    private func dismissStatementImportOffer() {
+        pendingImportStatementOffer = nil
+        pendingImportStatementOfferMessageId = nil
+    }
 
-        return preview
+    private func isStatementImportCandidate(_ url: URL) -> Bool {
+        let pathExtension = url.pathExtension.lowercased()
+        return ["csv", "tsv", "txt", "xlsx", "xls", "ofx"].contains(pathExtension)
     }
 }
 
@@ -1789,6 +2286,13 @@ private struct DeepAnalysisOfferPayload: Identifiable {
     let subtitle: String
 }
 
+private struct ImportStatementOfferPayload: Identifiable {
+    let id = UUID()
+    let title: String
+    let subtitle: String
+    let fileURL: URL
+}
+
 private struct DeepAnalysisOfferBubble: View {
     let payload: DeepAnalysisOfferPayload
     let isPreparing: Bool
@@ -1898,6 +2402,69 @@ private struct DeepAnalysisPromptBubble: View {
                     style: .primary,
                     action: onShare
                 )
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer(minLength: 32)
+        }
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+}
+
+private struct ImportStatementOfferBubble: View {
+    let payload: ImportStatementOfferPayload
+    let onImport: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            Image(systemName: "tray.and.arrow.down.fill")
+                .font(.title3)
+                .foregroundStyle(.blue)
+                .frame(width: 32, height: 32)
+
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "doc.text.fill")
+                            .font(.title3)
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .background(Color.blue)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(payload.title)
+                                .font(.subheadline.weight(.semibold))
+                            Text(payload.fileURL.lastPathComponent)
+                                .font(.caption2)
+                                .foregroundStyle(FinAInceColor.secondaryText)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Text(payload.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(FinAInceColor.secondaryText)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .finSecondarySurface(cornerRadius: 14)
+
+                HStack(spacing: 8) {
+                    QuickReplyButton(
+                        title: t("chat.importStatement.importButton"),
+                        icon: "square.and.arrow.down",
+                        style: .primary,
+                        action: onImport
+                    )
+                    QuickReplyButton(
+                        title: t("chat.importStatement.notNow"),
+                        icon: "xmark",
+                        style: .cancel,
+                        action: onCancel
+                    )
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 

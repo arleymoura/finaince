@@ -150,12 +150,12 @@ struct Step3CategoryView: View {
     }
 
     private func categoryRecommendation(for merchant: String) -> (category: Category, subcategory: Category?)? {
-        let normalizedMerchant = normalizeMerchant(merchant)
+        let normalizedMerchant = TransactionCategorizationService.normalizedText(merchant)
         guard !normalizedMerchant.isEmpty else { return nil }
 
         let matchingTransactions = allTransactions.filter { tx in
             guard let placeName = tx.placeName, !placeName.isEmpty else { return false }
-            let normalizedPlace = normalizeMerchant(placeName)
+            let normalizedPlace = TransactionCategorizationService.normalizedText(placeName)
             return normalizedPlace == normalizedMerchant ||
                 normalizedPlace.contains(normalizedMerchant) ||
                 normalizedMerchant.contains(normalizedPlace)
@@ -181,20 +181,18 @@ struct Step3CategoryView: View {
         isLoadingAIRecommendation = true
         defer { isLoadingAIRecommendation = false }
 
-        let options = categorySuggestionOptions()
         guard
-            let suggestion = try? await AIService.suggestCategory(
-                merchantName: merchant,
+            let suggestion = try? await TransactionCategorizationService.suggestCategory(
+                for: merchant,
                 settings: settings,
-                options: options
-            ),
-            let recommendation = recommendation(from: suggestion)
+                categories: rootCategories
+            )
         else {
             applyDefaultCategoryIfNeeded()
             return
         }
 
-        applyRecommendation(recommendation)
+        applyRecommendation((suggestion.category, suggestion.subcategory))
     }
 
     private func applyDefaultCategoryIfNeeded() {
@@ -212,56 +210,6 @@ struct Step3CategoryView: View {
         category.systemKey == "other"
     }
 
-    private func categorySuggestionOptions() -> [AIService.CategorySuggestionOption] {
-        rootCategories.flatMap { category in
-            let subcategories = (category.subcategories ?? []).sorted { $0.sortOrder < $1.sortOrder }
-            let categoryOption = AIService.CategorySuggestionOption(
-                categorySystemKey: category.systemKey,
-                categoryName: category.name,
-                categoryDisplayName: category.displayName,
-                subcategorySystemKey: nil,
-                subcategoryName: nil,
-                subcategoryDisplayName: nil
-            )
-            let subcategoryOptions = subcategories.map {
-                AIService.CategorySuggestionOption(
-                    categorySystemKey: category.systemKey,
-                    categoryName: category.name,
-                    categoryDisplayName: category.displayName,
-                    subcategorySystemKey: $0.systemKey,
-                    subcategoryName: $0.name,
-                    subcategoryDisplayName: $0.displayName
-                )
-            }
-            return [categoryOption] + subcategoryOptions
-        }
-    }
-
-    private func recommendation(
-        from suggestion: AIService.CategorySuggestionResult
-    ) -> (category: Category, subcategory: Category?)? {
-        let category = rootCategories.first {
-            if let systemKey = suggestion.categorySystemKey {
-                return $0.systemKey == systemKey
-            }
-            return normalizeMerchant($0.name) == normalizeMerchant(suggestion.categoryName)
-        }
-
-        guard let category else {
-            return nil
-        }
-
-        let subcategory = (category.subcategories ?? []).first {
-            if let systemKey = suggestion.subcategorySystemKey {
-                return $0.systemKey == systemKey
-            }
-            guard let subcategoryName = suggestion.subcategoryName else { return false }
-            return normalizeMerchant($0.name) == normalizeMerchant(subcategoryName)
-        }
-
-        return (category, subcategory)
-    }
-
     private var recommendationLoadingView: some View {
         HStack(spacing: 8) {
             ProgressView()
@@ -276,103 +224,4 @@ struct Step3CategoryView: View {
         .padding(.horizontal)
     }
 
-    private func normalizeMerchant(_ value: String) -> String {
-        value
-            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-            .lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
-
-// MARK: - Add Category Cell
-
-struct AddCategoryCell: View {
-    var isSmall: Bool = false
-    var label: String = "Nova"
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "plus")
-                .font(isSmall ? .title3 : .title2)
-                .foregroundStyle(Color.accentColor)
-                .frame(width: isSmall ? 40 : 52, height: isSmall ? 40 : 52)
-                .background(Color.accentColor.opacity(0.1))
-                .clipShape(Circle())
-                .overlay(
-                    Circle()
-                        .stroke(style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
-                        .foregroundStyle(Color.accentColor.opacity(0.5))
-                )
-
-            Text(label)
-                .font(isSmall ? .caption2 : .caption)
-                .foregroundStyle(Color.accentColor)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
-        .background(Color.accentColor.opacity(0.05))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
-                .foregroundStyle(Color.accentColor.opacity(0.4))
-        )
-    }
-}
-
-// MARK: - Category Grid Item
-
-struct CategoryGridItem: View {
-    let category: Category
-    let isSelected: Bool
-    var isSmall: Bool = false
-    var isRecommended: Bool = false
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Image(systemName: category.icon)
-                .font(isSmall ? .title3 : .title2)
-                .foregroundStyle(isSelected ? .white : Color(hex: category.color))
-                .frame(width: isSmall ? 40 : 52, height: isSmall ? 40 : 52)
-                .background(isSelected ? Color(hex: category.color) : Color(hex: category.color).opacity(0.15))
-                .clipShape(Circle())
-
-            Text(category.displayName)
-                .font(isSmall ? .caption2 : .caption)
-                .foregroundStyle(isSelected ? Color(hex: category.color) : .primary)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 8)
-        .background(isSelected ? Color(hex: category.color).opacity(0.1) : Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(alignment: .topTrailing) {
-            if isRecommended {
-                HStack(spacing: 3) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: isSmall ? 8 : 9, weight: .bold))
-                    Text(t("newTx.autoBadge"))
-                        .font(.system(size: isSmall ? 8 : 9, weight: .semibold))
-                }
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 3)
-                .background(Color.accentColor.opacity(0.92))
-                .foregroundStyle(.white)
-                .clipShape(Capsule())
-                .padding(6)
-            }
-        }
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(isSelected ? Color(hex: category.color) : Color.clear, lineWidth: 2)
-        )
-    }
 }

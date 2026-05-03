@@ -20,6 +20,7 @@ Use these instructions as the default project-specific behavior unless the user 
   - `SavingsOpportunityService` for savings opportunities
   - dedicated services for import, receipt extraction, categorization, and draft resolution
 - When introducing a new cross-cutting behavior, prefer a new service instead of growing an unrelated one.
+- Avoid duplicate code, if necessary isolate a service that is reused 
 
 ## AI Features
 - AI should not be used as a substitute for deterministic detection logic.

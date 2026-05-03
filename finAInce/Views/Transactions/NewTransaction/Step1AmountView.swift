@@ -33,12 +33,9 @@ struct Step1AmountView: View {
                 .padding(.trailing, 16)
             }
 
-            // ── Tipo de transação ───────────────────────────────────────
-//            Picker(t("newTx.type"), selection: $state.type) {
-//                Text(TransactionType.expense.label).tag(TransactionType.expense)
-//            }
-//            .pickerStyle(.segmented)
-//            .padding(.horizontal)
+            if state.allowsKindSelection {
+                transactionKindPicker
+            }
 
             // ── Teclado por centavos ────────────────────────────────────
             CentsKeypad(amount: $state.amount)
@@ -61,7 +58,81 @@ struct Step1AmountView: View {
     }
 
     private var typeColor: Color {
-        .red
+        switch state.kind {
+        case .regular:
+            return .red
+        case .cardBillPayment:
+            return .blue
+        case .cashWithdrawal:
+            return .orange
+        }
+    }
+
+    private var transactionKindPicker: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(t("newTx.type"))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(FinAInceColor.secondaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 10) {
+                transactionKindButton(.regular, icon: "minus.circle.fill", color: .red)
+
+                if state.allowsKindSelection {
+                    transactionKindButton(.cardBillPayment, icon: "creditcard.and.123", color: .blue)
+                    transactionKindButton(.cashWithdrawal, icon: "banknote.fill", color: .orange)
+                }
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private func transactionKindButton(_ kind: TransactionKind, icon: String, color: Color) -> some View {
+        let isSelected = state.kind == kind
+
+        return Button {
+            state.kind = kind
+            switch kind {
+            case .regular:
+                state.type = .expense
+                state.destinationAccount = nil
+            case .cardBillPayment:
+                state.type = .transfer
+                state.category = nil
+                state.subcategory = nil
+                state.costCenter = nil
+            case .cashWithdrawal:
+                state.type = .transfer
+                state.category = nil
+                state.subcategory = nil
+                state.costCenter = nil
+            }
+        } label: {
+            VStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(isSelected ? .white : color)
+                    .frame(width: 42, height: 42)
+                    .background(isSelected ? color : color.opacity(0.14))
+                    .clipShape(Circle())
+
+                Text(kind.label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(isSelected ? FinAInceColor.primaryText : FinAInceColor.secondaryText)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, minHeight: 112)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 12)
+            .background(isSelected ? color.opacity(0.12) : FinAInceColor.secondarySurface)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(isSelected ? color : FinAInceColor.borderSubtle, lineWidth: isSelected ? 2 : 1)
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 

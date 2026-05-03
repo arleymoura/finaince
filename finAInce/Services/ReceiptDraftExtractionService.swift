@@ -39,10 +39,15 @@ struct ReceiptDraftExtractionService {
             fallbackText: fallbackText,
             receiptImageData: receiptImageData
         ) {
-            return normalizeDraft(cardNotificationDraft, categories: categories, accounts: accounts)
+            return await applySharedCategorization(
+                to: cardNotificationDraft,
+                settings: settings,
+                categories: categories,
+                accounts: accounts
+            )
         }
 
-        let categoryOptions = rootCategories(from: categories).map {
+        let categoryOptions = TransactionCategorizationService.rootExpenseCategories(from: categories).map {
             AIService.ReceiptCategoryOption(
                 categorySystemKey: $0.systemKey,
                 categoryName: $0.name,
@@ -86,52 +91,45 @@ struct ReceiptDraftExtractionService {
             receiptImageData: receiptImageData
         )
 
-        return normalizeDraft(draft, categories: categories, accounts: accounts)
-    }
-
-    static func normalizeDraft(
-        _ draft: TransactionDraft,
-        categories: [Category],
-        accounts: [Account]
-    ) -> TransactionDraft {
-        let category = resolvedCategory(for: draft, in: categories)
-        let account = resolvedAccount(for: draft, in: accounts)
-
-        return TransactionDraft(
-            amount: draft.amount,
-            typeRaw: draft.typeRaw,
-            categorySystemKey: category?.systemKey ?? draft.categorySystemKey,
-            categoryName: category?.displayName ?? category?.name ?? draft.categoryName,
-            placeName: draft.placeName,
-            notes: draft.notes,
-            date: draft.date,
-            accountName: account?.name ?? draft.accountName,
-            receiptImageData: draft.receiptImageData
+        return await applySharedCategorization(
+            to: draft,
+            settings: settings,
+            categories: categories,
+            accounts: accounts
         )
     }
 
-    static func resolvedCategory(for draft: TransactionDraft, in categories: [Category]) -> Category? {
-        categories.first { $0.systemKey == draft.categorySystemKey }
-            ?? categories.first { $0.rootSystemKey == draft.categorySystemKey }
-            ?? categories.first { $0.name.localizedCaseInsensitiveCompare(draft.categoryName) == .orderedSame }
-            ?? categories.first { $0.displayName.localizedCaseInsensitiveCompare(draft.categoryName) == .orderedSame }
-            ?? categories.first { $0.name.localizedCaseInsensitiveContains(draft.categoryName) }
-            ?? categories.first { $0.displayName.localizedCaseInsensitiveContains(draft.categoryName) }
-    }
+    private static func applySharedCategorization(
+        to draft: TransactionDraft,
+        settings: AISettings,
+        categories: [Category],
+        accounts: [Account]
+    ) async -> TransactionDraft {
+        var enrichedDraft = draft
 
-    static func resolvedAccount(for draft: TransactionDraft, in accounts: [Account]) -> Account? {
-        if draft.accountName.isEmpty {
-            return accounts.first(where: \.isDefault) ?? accounts.first
+        if let suggestion = try? await TransactionCategorizationService.suggestCategory(
+            for: draft.placeName,
+            settings: settings,
+            categories: categories
+        ) {
+            enrichedDraft = TransactionDraft(
+                amount: draft.amount,
+                typeRaw: draft.typeRaw,
+                categorySystemKey: suggestion.subcategory?.systemKey ?? suggestion.category.rootSystemKey ?? suggestion.category.systemKey ?? draft.categorySystemKey,
+                categoryName: suggestion.subcategory?.displayName ?? suggestion.category.displayName,
+                placeName: suggestion.resolvedMerchantName ?? draft.placeName,
+                notes: draft.notes,
+                date: draft.date,
+                accountName: draft.accountName,
+                receiptImageData: draft.receiptImageData
+            )
         }
 
-        return accounts.first { $0.name.localizedCaseInsensitiveCompare(draft.accountName) == .orderedSame }
-            ?? accounts.first { $0.name.localizedCaseInsensitiveContains(draft.accountName) }
-            ?? accounts.first(where: \.isDefault)
-            ?? accounts.first
-    }
-
-    private static func rootCategories(from categories: [Category]) -> [Category] {
-        categories.filter { $0.parent == nil && !($0.systemKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) }
+        return TransactionDraftResolutionService.normalizeDraft(
+            enrichedDraft,
+            categories: categories,
+            accounts: accounts
+        )
     }
 
     private static func extractCardNotificationDraft(
@@ -270,7 +268,7 @@ struct ReceiptDraftExtractionService {
         let normalized = ocrText
             .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
             .lowercased()
-        let rootCategories = rootCategories(from: categories)
+        let rootCategories = TransactionCategorizationService.rootExpenseCategories(from: categories)
 
         let matchedKey: String
         if normalized.contains("impuesto sobre vehiculos")

@@ -1,6 +1,5 @@
 import SwiftUI
 import SwiftData
-import Vision
 import UIKit
 
 // MARK: - Receipt Scanner
@@ -9,12 +8,13 @@ struct ReceiptScannerView: View {
     @Environment(\.dismiss) private var dismiss
     @Query private var aiSettingsArr: [AISettings]
     @Query private var categories: [Category]
+    @Query private var accounts: [Account]
     @Bindable var state: NewTransactionState
 
     private enum ScanPhase {
         case idle
         case processing
-        case result(amount: Double, storeName: String, categorySystemKey: String?, categoryName: String, notes: String)
+        case result(draft: TransactionDraft)
         case error(String)
     }
 
@@ -77,9 +77,8 @@ struct ReceiptScannerView: View {
                         .background(Color(.secondarySystemBackground))
                         .clipShape(RoundedRectangle(cornerRadius: 14))
 
-                    case .result(let amount, let storeName, let categorySystemKey, let categoryName, let notes):
-                        resultCard(amount: amount, storeName: storeName,
-                                   categorySystemKey: categorySystemKey, categoryName: categoryName, notes: notes)
+                    case .result(let draft):
+                        resultCard(draft: draft)
 
                     case .error(let msg):
                         VStack(spacing: 12) {
@@ -161,15 +160,9 @@ struct ReceiptScannerView: View {
         .buttonStyle(.plain)
     }
 
-    private func resultCard(amount: Double, storeName: String,
-                            categorySystemKey: String?, categoryName: String, notes: String) -> some View {
-        let resolvedCategory = categories.first {
-            $0.systemKey == categorySystemKey
-        } ?? categories.first {
-            $0.name.localizedCaseInsensitiveCompare(categoryName) == .orderedSame
-        } ?? categories.first {
-            !categoryName.isEmpty && $0.name.localizedCaseInsensitiveContains(categoryName)
-        }
+    private func resultCard(draft: TransactionDraft) -> some View {
+        let resolvedCategory = TransactionDraftResolutionService.resolvedCategory(for: draft, in: Array(categories))
+        let resolvedAccount = TransactionDraftResolutionService.resolvedAccount(for: draft, in: Array(accounts))
 
         return VStack(spacing: 20) {
             VStack(spacing: 14) {
@@ -186,12 +179,12 @@ struct ReceiptScannerView: View {
 
                 // Valor
                 resultRow(label: t("transaction.amount"),
-                          value: amount.asCurrency(),
+                          value: draft.amount.asCurrency(),
                           valueBold: true)
 
                 // Estabelecimento
-                if !storeName.isEmpty {
-                    resultRow(label: t("transaction.establishment"), value: storeName)
+                if !draft.placeName.isEmpty {
+                    resultRow(label: t("transaction.establishment"), value: draft.placeName)
                 }
 
                 // Categoria sugerida
@@ -208,13 +201,17 @@ struct ReceiptScannerView: View {
                                 .font(.subheadline.bold())
                         }
                     }
-                } else if !categoryName.isEmpty {
-                    resultRow(label: t("transaction.category"), value: categoryName)
+                } else if !draft.categoryName.isEmpty {
+                    resultRow(label: t("transaction.category"), value: draft.categoryName)
                 }
 
                 // Observação
-                if !notes.isEmpty {
-                    resultRow(label: t("receipt.obs"), value: notes)
+                if !draft.notes.isEmpty {
+                    resultRow(label: t("receipt.obs"), value: draft.notes)
+                }
+
+                if let account = resolvedAccount {
+                    resultRow(label: t("transaction.account"), value: account.name)
                 }
             }
             .padding(16)
@@ -223,10 +220,12 @@ struct ReceiptScannerView: View {
 
             // CTA — preenche state e vai direto para a tela de confirmação
             Button {
-                state.amount = amount
-                if !storeName.isEmpty { state.placeName = storeName }
-                if let cat = resolvedCategory  { state.category = cat }
-                if !notes.isEmpty              { state.notes    = notes }
+                state.amount = draft.amount
+                if !draft.placeName.isEmpty { state.placeName = draft.placeName }
+                if let cat = resolvedCategory { state.category = cat }
+                if let account = resolvedAccount { state.account = account }
+                if !draft.notes.isEmpty { state.notes = draft.notes }
+                if let date = draft.date { state.date = date }
                 if let scannedImage,
                    let draft = try? ReceiptAttachmentStore.createDraft(from: scannedImage) {
                     state.receiptDrafts.append(draft)
@@ -280,61 +279,23 @@ struct ReceiptScannerView: View {
         phase = .processing
 
         // 1. OCR via Vision
-        let ocrText = await recognizeText(in: image)
+        let ocrText = await ReceiptDraftExtractionService.recognizeText(in: image)
         guard !ocrText.isEmpty else {
             phase = .error(t("receipt.noText"))
             return
         }
 
-        // 2. AI analysis — passa categorias para inferência
-        let categoryOptions = categories
-            .filter { $0.parent == nil }
-            .map {
-                AIService.ReceiptCategoryOption(
-                    categorySystemKey: $0.systemKey,
-                    categoryName: $0.name,
-                    categoryDisplayName: $0.displayName
-                )
-            }
-
-        do {
-            let result = try await AIService.analyzeReceipt(
-                ocrText: ocrText,
-                settings: settings,
-                categoryOptions: categoryOptions
-            )
-            phase = .result(
-                amount: result.amount,
-                storeName: result.storeName,
-                categorySystemKey: result.suggestedCategorySystemKey,
-                categoryName: result.suggestedCategoryName,
-                notes: result.notes
-            )
-        } catch {
-            phase = .error(error.localizedDescription)
-        }
-    }
-
-    private func recognizeText(in image: UIImage) async -> String {
-        await withCheckedContinuation { continuation in
-            guard let cgImage = image.cgImage else {
-                continuation.resume(returning: "")
-                return
-            }
-
-            let request = VNRecognizeTextRequest { req, _ in
-                let observations = req.results as? [VNRecognizedTextObservation] ?? []
-                let text = observations
-                    .compactMap { $0.topCandidates(1).first?.string }
-                    .joined(separator: "\n")
-                continuation.resume(returning: text)
-            }
-            request.recognitionLevel       = .accurate
-            request.recognitionLanguages   = LanguageManager.shared.effective.visionRecognitionLanguages
-            request.usesLanguageCorrection = true
-
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-            try? handler.perform([request])
+        if let draft = await ReceiptDraftExtractionService.extractDraft(
+            from: ocrText,
+            settings: settings,
+            categories: Array(categories),
+            accounts: Array(accounts),
+            fallbackText: "",
+            receiptImageData: image.jpegData(compressionQuality: 0.85)
+        ) {
+            phase = .result(draft: draft)
+        } else {
+            phase = .error(t("receipt.invalidDocument"))
         }
     }
 }
